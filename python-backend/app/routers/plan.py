@@ -2,16 +2,20 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, List, Any
 from app.models.plan import PlanRequest, ReviseRequest, TripPlan
 from app.models.parser_schemas import ParsePromptRequest, ParsedTripPrompt
+from app.models.conversation import (
+    ConversationSession, ChatStartRequest, ChatContinueRequest, ChatResponse
+)
 from app.services.planner import generate, revise
-from app.services.conversational_planner import chat_to_collect_trip_info, create_plan_from_conversation
 from app.services.prompt_parser import parse_prompt
+from app.services.conversation_manager import process_conversation_turn
 from app.tools.adapters import get_mcp_tools_schema
+from app.core.logging import logger
 import uuid
 
 router = APIRouter(prefix="/api", tags=["planner"])
 
-# In-memory storage for AI-driven conversations (use Redis/DB in production)
-ai_conversations: Dict[str, List[Dict[str, str]]] = {}
+# In-memory storage for conversation sessions (use Redis/DB in production)
+conversation_sessions: Dict[str, ConversationSession] = {}
 
 
 @router.post("/plan", response_model=TripPlan)
@@ -75,109 +79,96 @@ async def refresh_tools_endpoint() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/chat/start")
-async def start_ai_chat(data: Dict[str, Any]) -> Dict[str, Any]:
+@router.post("/chat/start", response_model=ChatResponse)
+async def start_ai_chat(req: ChatStartRequest) -> ChatResponse:
     """
-    Start an AI-driven conversation to collect trip information.
-    The AI will naturally ask for missing details.
+    Start a new conversational trip planning session.
+    
+    The AI will:
+    - Parse your request for trip details
+    - Ask questions for missing information
+    - Create a plan when ready
+    - Handle revisions to the plan
+    
+    Every response includes the latest plan (if available).
     """
     try:
-        user_message = data.get("message", "")
-        language = data.get("language", "en")
-        
-        # Create new conversation
+        # Create new session
         session_id = str(uuid.uuid4())
-        conversation_history = [
-            {"role": "user", "content": user_message}
-        ]
+        session = ConversationSession(session_id=session_id)
         
-        # Get AI response
-        ai_response, is_ready, collected_data = await chat_to_collect_trip_info(
-            conversation_history,
-            language
+        # Process first turn
+        ai_message, plan, needs_more_info = await process_conversation_turn(
+            session=session,
+            user_message=req.initial_message,
+            language=req.language,
+            currency=req.currency
         )
         
-        # Store conversation
-        conversation_history.append({"role": "assistant", "content": ai_response})
-        ai_conversations[session_id] = conversation_history
+        # Store session
+        conversation_sessions[session_id] = session
         
-        return {
-            "session_id": session_id,
-            "message": ai_response,
-            "ready_to_plan": is_ready,
-            "collected_data": collected_data
-        }
+        # Build response
+        response = ChatResponse(
+            session_id=session_id,
+            message=ai_message,
+            plan=plan.model_dump() if plan else None,
+            collected_data=session.collected_data,
+            needs_more_info=needs_more_info,
+            conversation_complete=not needs_more_info and plan is not None
+        )
+        
+        return response
         
     except Exception as e:
+        logger.error(f"Error in start_chat: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/chat/continue")
-async def continue_ai_chat(data: Dict[str, Any]) -> Dict[str, Any]:
+@router.post("/chat/continue", response_model=ChatResponse)
+async def continue_ai_chat(req: ChatContinueRequest) -> ChatResponse:
     """
-    Continue an AI-driven conversation.
-    Send user's response and get next AI question or ready signal.
+    Continue an existing conversation.
+    
+    Send your message to:
+    - Answer AI's questions
+    - Request plan revisions (e.g., "2. günü daha rahat yap")
+    - Ask for changes (e.g., "Daha ucuz otel bul")
+    
+    Every response includes the latest plan (if available).
     """
     try:
-        session_id = data.get("session_id")
-        user_message = data.get("message", "")
-        language = data.get("language", "en")
-        
-        if not session_id or session_id not in ai_conversations:
+        # Get session
+        if req.session_id not in conversation_sessions:
             raise HTTPException(status_code=404, detail="Session not found. Please start a new conversation.")
         
-        # Get conversation history
-        conversation_history = ai_conversations[session_id]
+        session = conversation_sessions[req.session_id]
         
-        # Add user message
-        conversation_history.append({"role": "user", "content": user_message})
-        
-        # Get AI response
-        ai_response, is_ready, collected_data = await chat_to_collect_trip_info(
-            conversation_history,
-            language
+        # Process conversation turn
+        ai_message, plan, needs_more_info = await process_conversation_turn(
+            session=session,
+            user_message=req.message,
+            language="tr",  # Could be stored in session
+            currency="TRY"  # Could be stored in session
         )
         
-        # Add AI response to history
-        conversation_history.append({"role": "assistant", "content": ai_response})
-        ai_conversations[session_id] = conversation_history
+        # Update session
+        conversation_sessions[req.session_id] = session
         
-        return {
-            "session_id": session_id,
-            "message": ai_response,
-            "ready_to_plan": is_ready,
-            "collected_data": collected_data
-        }
-        
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/chat/create_plan")
-async def create_plan_from_chat(data: Dict[str, Any]) -> TripPlan:
-    """
-    Create a travel plan from AI-collected conversation data.
-    """
-    try:
-        collected_data = data.get("collected_data")
-        language = data.get("language", "en")
-        currency = data.get("currency", "TRY")
-        
-        if not collected_data:
-            raise HTTPException(status_code=400, detail="No collected data provided")
-        
-        # Create the plan
-        plan = await create_plan_from_conversation(
-            collected_data,
-            language,
-            currency
+        # Build response
+        response = ChatResponse(
+            session_id=req.session_id,
+            message=ai_message,
+            plan=plan.model_dump() if plan else None,
+            collected_data=session.collected_data,
+            needs_more_info=needs_more_info,
+            conversation_complete=not needs_more_info and plan is not None
         )
         
-        return plan
+        return response
         
     except Exception as e:
+        logger.error(f"Error in continue_chat: {e}")
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
