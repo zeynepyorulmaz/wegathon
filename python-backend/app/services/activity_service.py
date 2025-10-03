@@ -390,21 +390,37 @@ async def _generate_activities_with_constraints(
         for c in day_constraints
     ])
     
-    system_prompt = f"""You are a local travel expert in {destination}. Create REAL, SPECIFIC activity options.
+    system_prompt = f"""You are a local travel expert in {destination}. Create DIVERSE, UNIQUE activity options.
 
-**TIME CONSTRAINTS (CRITICAL):**
+**CRITICAL RULES:**
+1. **NO DUPLICATES**: Each activity must be COMPLETELY DIFFERENT
+2. **NO REPEATS**: Don't suggest same place/restaurant/activity twice
+3. **VARIETY**: Mix types - museum, restaurant, park, market, attraction, cafe, tour
+4. **REAL PLACES**: Use actual names ("Museum Island", "Curry 36", "Tiergarten Park")
+5. **UNIQUE PER SLOT**: Each time slot's 4 options must be ENTIRELY different from each other
+6. **UNIQUE ACROSS DAYS**: Don't repeat activities from previous days
+
+**TIME CONSTRAINTS:**
 {constraints_desc}
 
-Day 1: Limited time (flight arrival + hotel check-in)
-Day {num_days}: Limited time (hotel checkout + flight departure)
+Day 1: Limited (after arrival + check-in)
+Day {num_days}: Limited (before checkout + departure)
 
-**RULES:**
-- Use REAL place names in {destination}
-- "Brandenburg Gate", "Curry 36", "Museum Island" not "generic museum"
-- Include address/neighborhood
-- Respect time constraints above
-- 4 options per time slot
-- Mix popular + hidden gems
+**EXAMPLE VARIETY FOR MORNING:**
+- Option 1: Breakfast café (e.g., "Café Einstein")
+- Option 2: Museum (e.g., "Pergamon Museum")
+- Option 3: Walking tour (e.g., "Brandenburg Gate area walk")
+- Option 4: Market (e.g., "Mauerpark flea market")
+
+**NOT ACCEPTABLE:**
+❌ "Museum visit" repeated 4 times
+❌ "Walking tour" on day 1 and day 2
+❌ Generic "breakfast" without specific place
+
+**ACCEPTABLE:**
+✅ Day 1 morning: Café Einstein, Pergamon Museum, Brandenburg Gate, Tiergarten Park
+✅ Day 2 morning: Markthalle Neun, Berlin Wall, Reichstag, Charlottenburg Palace
+✅ All different, all specific, all real
 
 Return JSON:
 {{"time_slots": [
@@ -413,13 +429,16 @@ Return JSON:
     "time": "16:00-18:00",
     "label": "evening",
     "options": [
-      {{"text": "Real place name", "description": "Why visit", "location": "Area"}},
-      ...4 options
+      {{"text": "Specific unique place #1", "description": "Why", "location": "Area"}},
+      {{"text": "Specific unique place #2", "description": "Why", "location": "Area"}},
+      {{"text": "Specific unique place #3", "description": "Why", "location": "Area"}},
+      {{"text": "Specific unique place #4", "description": "Why", "location": "Area"}}
     ]
   }}
 ]}}
 
-Language: {"Turkish" if language == "tr" else "English"}"""
+Language: {"Turkish" if language == "tr" else "English"}
+REMEMBER: Every option must be UNIQUE and SPECIFIC!"""
 
     user_prompt = f"""Plan {destination} activities:
 Days: {num_days} ({start_date})

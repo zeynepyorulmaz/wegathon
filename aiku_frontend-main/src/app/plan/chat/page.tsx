@@ -290,25 +290,37 @@ export default function ChatPlanPage() {
           {currentPlan && (
             <Card className="border-2 border-primary/20">
               <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  ✅ Plan Hazır!
-                </CardTitle>
+                <CardTitle className="text-base">✅ Planınız Hazır!</CardTitle>
+                <CardDescription className="text-xs">
+                  Değiştirmek istediğiniz kısımları seçin
+                </CardDescription>
               </CardHeader>
               <Separator />
               <CardContent className="pt-4 space-y-3">
                 {/* Flight */}
                 {currentPlan.flights?.outbound && (
                   <div className="p-3 bg-muted rounded-lg">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Plane className="h-4 w-4 text-primary" />
-                      <span className="font-medium text-sm">Uçuş</span>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Plane className="h-4 w-4 text-primary" />
+                        <span className="font-medium text-sm">Uçuş</span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 text-xs"
+                        onClick={() => setInput("uçuşu değiştir")}
+                      >
+                        Değiştir
+                      </Button>
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {currentPlan.flights.outbound.segments?.[0]?.airline}{" "}
                       {currentPlan.flights.outbound.segments?.[0]?.flightNumber}
                     </div>
                     <div className="text-sm font-semibold text-primary mt-1">
-                      {currentPlan.flights.outbound.price} {currentPlan.flights.outbound.currency}
+                      {currentPlan.flights.outbound.price?.toFixed(0)}{" "}
+                      {currentPlan.flights.outbound.currency}
                     </div>
                   </div>
                 )}
@@ -316,13 +328,23 @@ export default function ChatPlanPage() {
                 {/* Hotel */}
                 {currentPlan.lodging?.selected?.name && (
                   <div className="p-3 bg-muted rounded-lg">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Hotel className="h-4 w-4 text-primary" />
-                      <span className="font-medium text-sm">Otel</span>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Hotel className="h-4 w-4 text-primary" />
+                        <span className="font-medium text-sm">Otel</span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 text-xs"
+                        onClick={() => setInput("oteli değiştir")}
+                      >
+                        Değiştir
+                      </Button>
                     </div>
                     <div className="text-xs">{currentPlan.lodging.selected.name}</div>
                     <div className="text-sm font-semibold text-primary mt-1">
-                      {currentPlan.lodging.selected.priceTotal}{" "}
+                      {currentPlan.lodging.selected.priceTotal?.toFixed(0)}{" "}
                       {currentPlan.lodging.selected.currency}
                     </div>
                   </div>
@@ -341,14 +363,17 @@ export default function ChatPlanPage() {
                   </div>
                 )}
 
+                <Separator />
+
                 <Button
                   className="w-full"
                   onClick={() => {
-                    // TODO: Navigate to full plan view
-                    console.log("View full plan:", currentPlan);
+                    // Navigate to full interactive plan view
+                    router.push(`/plan/full?prompt=${encodeURIComponent(messages[0]?.content || "")}`);
                   }}
                 >
-                  Planın Tamamını Gör
+                  <Sparkles className="h-4 w-4 mr-2" />
+                  Aktiviteleri Görüntüle
                 </Button>
               </CardContent>
             </Card>
