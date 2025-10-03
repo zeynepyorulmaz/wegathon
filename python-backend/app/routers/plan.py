@@ -24,6 +24,226 @@ conversation_sessions: Dict[str, ConversationSession] = {}
 
 
 @router.post(
+    "/bookings",
+    tags=["Planning"],
+    summary="Get Flight + Hotel Options (Parallel)",
+    description="Fetch flights and hotels in parallel for optimal performance"
+)
+async def get_bookings(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Get flight and hotel options in parallel.
+    
+    **Example Request:**
+    ```json
+    {
+      "origin": "Istanbul",
+      "destination": "Berlin",
+      "start_date": "2025-11-20",
+      "end_date": "2025-11-23",
+      "adults": 2,
+      "children": 0
+    }
+    ```
+    
+    **Returns:**
+    - Flights (outbound + alternatives)
+    - Hotels (selected + alternatives)
+    - Pricing estimate
+    
+    **Performance:** Runs both searches in parallel!
+    """
+    from app.services.booking_service import get_bookings_parallel
+    
+    try:
+        result = await get_bookings_parallel(
+            origin=data.get("origin", "Istanbul"),
+            destination=data.get("destination"),
+            start_date=data.get("start_date"),
+            end_date=data.get("end_date"),
+            adults=data.get("adults", 2),
+            children=data.get("children", 0)
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Booking error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/activities",
+    tags=["Planning"],
+    summary="Plan Daily Activities",
+    description="AI-generated day-by-day itinerary with activities"
+)
+async def get_activities(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Plan activities and daily itinerary.
+    
+    **Example Request:**
+    ```json
+    {
+      "destination": "Berlin",
+      "start_date": "2025-11-20",
+      "end_date": "2025-11-23",
+      "adults": 2,
+      "children": 0,
+      "preferences": ["museums", "food", "culture"],
+      "budget": "mid",
+      "language": "tr"
+    }
+    ```
+    
+    **Returns:**
+    - Day-by-day itinerary
+    - Morning/afternoon/evening blocks
+    - Activity suggestions
+    - Travel tips
+    """
+    from app.services.activity_service import plan_activities
+    
+    try:
+        result = await plan_activities(
+            destination=data.get("destination"),
+            start_date=data.get("start_date"),
+            end_date=data.get("end_date"),
+            adults=data.get("adults", 2),
+            children=data.get("children", 0),
+            preferences=data.get("preferences", []),
+            budget=data.get("budget"),
+            weather_data=data.get("weather_data"),
+            language=data.get("language", "tr")
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Activity planning error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/select/flight",
+    tags=["Planning"],
+    summary="Select Alternative Flight",
+    description="Change the selected flight option"
+)
+async def select_flight(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Select a different flight from alternatives.
+    
+    **Example:**
+    ```json
+    {
+      "session_id": "...",
+      "alternative_index": 1
+    }
+    ```
+    """
+    session_id = data.get("session_id")
+    index = data.get("alternative_index", 0)
+    
+    if not session_id or session_id not in conversation_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = conversation_sessions[session_id]
+    
+    if not session.current_plan:
+        raise HTTPException(status_code=400, detail="No plan found")
+    
+    alternatives = session.current_plan.get("alternatives", {}).get("flights", [])
+    
+    if 0 <= index < len(alternatives):
+        session.current_plan["selected"]["flight"] = alternatives[index]
+        return {"success": True, "message": "Flight updated", "selected": alternatives[index]}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid alternative index")
+
+
+@router.post(
+    "/select/hotel",
+    tags=["Planning"],
+    summary="Select Alternative Hotel",
+    description="Change the selected hotel option"
+)
+async def select_hotel(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Select a different hotel from alternatives.
+    
+    **Example:**
+    ```json
+    {
+      "session_id": "...",
+      "alternative_index": 0
+    }
+    ```
+    """
+    session_id = data.get("session_id")
+    index = data.get("alternative_index", 0)
+    
+    if not session_id or session_id not in conversation_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = conversation_sessions[session_id]
+    
+    if not session.current_plan:
+        raise HTTPException(status_code=400, detail="No plan found")
+    
+    alternatives = session.current_plan.get("alternatives", {}).get("hotels", [])
+    
+    if 0 <= index < len(alternatives):
+        session.current_plan["selected"]["hotel"] = alternatives[index]
+        return {"success": True, "message": "Hotel updated", "selected": alternatives[index]}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid alternative index")
+
+
+@router.post(
+    "/select/activity",
+    tags=["Planning"],
+    summary="Select Alternative Activity",
+    description="Change activity for a specific time slot"
+)
+async def select_activity(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Select a different activity for a time slot.
+    
+    **Example:**
+    ```json
+    {
+      "session_id": "...",
+      "day": 1,
+      "time_slot": "09:00-12:00",
+      "alternative_index": 2
+    }
+    ```
+    """
+    session_id = data.get("session_id")
+    day = data.get("day")
+    time_slot = data.get("time_slot")
+    index = data.get("alternative_index", 0)
+    
+    if not session_id or session_id not in conversation_sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session = conversation_sessions[session_id]
+    
+    if not session.current_plan:
+        raise HTTPException(status_code=400, detail="No plan found")
+    
+    # Find the time slot
+    time_slots = session.current_plan.get("activities", {}).get("time_slots", [])
+    
+    for slot in time_slots:
+        if slot.get("day") == day and slot.get("time") == time_slot:
+            alternatives = slot.get("alternatives", [])
+            if 0 <= index < len(alternatives):
+                slot["selected"] = alternatives[index]
+                return {"success": True, "message": "Activity updated", "selected": alternatives[index]}
+            else:
+                raise HTTPException(status_code=400, detail="Invalid alternative index")
+    
+    raise HTTPException(status_code=404, detail="Time slot not found")
+
+
+@router.post(
     "/revise",
     response_model=TripPlan,
     tags=["Planning"],

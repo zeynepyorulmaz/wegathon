@@ -142,17 +142,57 @@ async def process_conversation_turn(
         needs_more_info = True
         
         if action == "create_plan":
-            # We have enough info - create the plan
+            # We have enough info - create the plan with bookings
             logger.info("Creating plan with collected data...")
             
-            # Try to parse the initial message for better data
+            # Get bookings in parallel (flight + hotel)
+            from app.services.booking_service import get_bookings_parallel
+            
+            bookings = await get_bookings_parallel(
+                origin=session.collected_data.get("origin", "Istanbul"),
+                destination=session.collected_data.get("destination"),
+                start_date=session.collected_data.get("start_date"),
+                end_date=session.collected_data.get("end_date"),
+                adults=session.collected_data.get("adults", 2),
+                children=session.collected_data.get("children", 0)
+            )
+            
+            # Get activities
+            from app.services.activity_service import plan_activities
+            
+            activities = await plan_activities(
+                destination=session.collected_data.get("destination"),
+                start_date=session.collected_data.get("start_date"),
+                end_date=session.collected_data.get("end_date"),
+                adults=session.collected_data.get("adults", 2),
+                children=session.collected_data.get("children", 0),
+                preferences=session.collected_data.get("preferences", []),
+                budget=session.collected_data.get("budget"),
+                language=language
+            )
+            
+            # Build complete plan with defaults selected
+            plan_data = {
+                "bookings": bookings,
+                "activities": activities,
+                "selected": {
+                    "flight": bookings["flights"]["outbound"],
+                    "hotel": bookings["hotels"]["selected"]
+                },
+                "alternatives": {
+                    "flights": bookings["flights"].get("alternatives", []),
+                    "hotels": bookings["hotels"].get("alternatives", [])
+                }
+            }
+            
+            session.current_plan = plan_data
+            session.plan_created = True
+            session.needs_more_info = False
+            
+            # Try to parse the initial message for better context
             try:
                 initial_msg = session.history[0].content
                 parsed = await parse_prompt(initial_msg, locale="tr-TR" if language == "tr" else "en-US")
-                
-                # Use parsed data to fill in gaps
-                if not session.collected_data.get("origin"):
-                    session.collected_data["origin"] = parsed.departure.city
                 if not session.collected_data.get("destination"):
                     session.collected_data["destination"] = parsed.destination.city
                 if not session.collected_data.get("start_date"):
@@ -179,7 +219,7 @@ async def process_conversation_turn(
             
             prompt = ", ".join(prompt_parts)
             
-            # Generate plan
+            # Generate plan using new parallel API
             plan_request = PlanRequest(
                 prompt=prompt,
                 language=language,
@@ -194,25 +234,114 @@ async def process_conversation_turn(
             current_plan = trip_plan
             needs_more_info = False
             
+            # Add helpful message about alternatives
+            if language == "tr":
+                ai_message += "\n\n💡 İpucu: İsterseniz 'uçuşu değiştir' veya 'oteli değiştir' diyerek alternatifleri görebilirsiniz!"
+            else:
+                ai_message += "\n\n💡 Tip: You can say 'change flight' or 'change hotel' to see alternatives!"
+            
             logger.info("Plan created successfully")
             
         elif action == "revise_plan" and session.current_plan and revision_instruction:
-            # Revise existing plan
+            # Handle change requests
             logger.info(f"Revising plan: {revision_instruction}")
             
-            revise_request = ReviseRequest(
-                planId=session.session_id,
-                instruction=revision_instruction
-            )
+            instruction_lower = revision_instruction.lower()
             
-            trip_plan = await revise(session.current_plan, revise_request)
+            # Check if user wants to change flight or hotel
+            if "uçuş" in instruction_lower or "flight" in instruction_lower and "değiştir" in instruction_lower or "change" in instruction_lower:
+                # Show flight alternatives
+                alternatives = session.current_plan.get("alternatives", {}).get("flights", [])
+                
+                if alternatives:
+                    if language == "tr":
+                        ai_message = "✈️ Alternatif uçuşlar:\n\n"
+                        for i, flight in enumerate(alternatives[:3], 1):
+                            price = flight.get("price", 0)
+                            airline = flight.get("airline", "")
+                            ai_message += f"{i}. {airline} - {price} TRY\n"
+                        ai_message += "\nHangisini seçmek istersiniz? (Örn: '2. uçuşu seç')"
+                    else:
+                        ai_message = "✈️ Alternative flights:\n\n"
+                        for i, flight in enumerate(alternatives[:3], 1):
+                            price = flight.get("price", 0)
+                            airline = flight.get("airline", "")
+                            ai_message += f"{i}. {airline} - {price} TRY\n"
+                        ai_message += "\nWhich would you like? (e.g., 'select flight 2')"
+                else:
+                    ai_message = "Üzgünüm, alternatif uçuş bulunamadı." if language == "tr" else "Sorry, no alternative flights found."
+                
+                current_plan = TripPlan.model_validate(session.current_plan) if session.current_plan else None
+                needs_more_info = False
+                
+            elif "otel" in instruction_lower or "hotel" in instruction_lower and "değiştir" in instruction_lower or "change" in instruction_lower:
+                # Show hotel alternatives
+                alternatives = session.current_plan.get("alternatives", {}).get("hotels", [])
+                
+                if alternatives:
+                    if language == "tr":
+                        ai_message = "🏨 Alternatif oteller:\n\n"
+                        for i, hotel in enumerate(alternatives[:3], 1):
+                            name = hotel.get("name", "Hotel")
+                            price = hotel.get("priceTotal", 0)
+                            ai_message += f"{i}. {name} - {price} TRY\n"
+                        ai_message += "\nHangisini seçmek istersiniz? (Örn: '1. oteli seç')"
+                    else:
+                        ai_message = "🏨 Alternative hotels:\n\n"
+                        for i, hotel in enumerate(alternatives[:3], 1):
+                            name = hotel.get("name", "Hotel")
+                            price = hotel.get("priceTotal", 0)
+                            ai_message += f"{i}. {name} - {price} TRY\n"
+                        ai_message += "\nWhich would you like? (e.g., 'select hotel 1')"
+                else:
+                    ai_message = "Üzgünüm, alternatif otel bulunamadı." if language == "tr" else "Sorry, no alternative hotels found."
+                
+                current_plan = TripPlan.model_validate(session.current_plan) if session.current_plan else None
+                needs_more_info = False
+                
+            elif "seç" in instruction_lower or "select" in instruction_lower:
+                # User selecting an alternative
+                import re
+                numbers = re.findall(r'\d+', revision_instruction)
+                
+                if numbers:
+                    selection = int(numbers[0]) - 1  # 0-indexed
+                    
+                    if "uçuş" in instruction_lower or "flight" in instruction_lower:
+                        alternatives = session.current_plan.get("alternatives", {}).get("flights", [])
+                        if 0 <= selection < len(alternatives):
+                            session.current_plan["selected"]["flight"] = alternatives[selection]
+                            ai_message = "✅ Uçuş seçiminiz güncellendi! Plan güncel haliyle gösteriliyor." if language == "tr" else "✅ Flight updated! Showing updated plan."
+                        else:
+                            ai_message = "Geçersiz seçim." if language == "tr" else "Invalid selection."
+                    
+                    elif "otel" in instruction_lower or "hotel" in instruction_lower:
+                        alternatives = session.current_plan.get("alternatives", {}).get("hotels", [])
+                        if 0 <= selection < len(alternatives):
+                            session.current_plan["selected"]["hotel"] = alternatives[selection]
+                            ai_message = "✅ Otel seçiminiz güncellendi! Plan güncel haliyle gösteriliyor." if language == "tr" else "✅ Hotel updated! Showing updated plan."
+                        else:
+                            ai_message = "Geçersiz seçim." if language == "tr" else "Invalid selection."
+                
+                # Return updated plan
+                current_plan = TripPlan.model_validate(session.current_plan) if session.current_plan else None
+                needs_more_info = False
+                
+            else:
+                # Other revision - use standard revise
+                revise_request = ReviseRequest(
+                    planId=session.session_id,
+                    instruction=revision_instruction
+                )
+                
+                trip_plan = await revise(session.current_plan, revise_request)
+                
+                # Update plan in session
+                session.current_plan = trip_plan.model_dump()
+                current_plan = trip_plan
+                needs_more_info = False
             
-            # Update plan in session
-            session.current_plan = trip_plan.model_dump()
-            current_plan = trip_plan
-            needs_more_info = False
-            
-            logger.info("Plan revised successfully")
+            logger.info("Plan revision handled")
             
         elif action == "ask_question":
             # Still collecting information
@@ -233,7 +362,7 @@ async def process_conversation_turn(
     except Exception as e:
         logger.error(f"Error in conversation turn: {e}")
         error_message = "Üzgünüm, bir hata oluştu. Lütfen tekrar dener misiniz?" if language == "tr" else "Sorry, an error occurred. Please try again."
-        session.messages.append(ChatMessage(role="assistant", content=error_message))
+        session.history.append(ChatMessage(role="assistant", content=error_message))
         
         # Return current plan if we have one
         current_plan = None

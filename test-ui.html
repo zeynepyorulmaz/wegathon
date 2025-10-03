@@ -367,6 +367,62 @@
             </div>
         </div>
 
+        <div class="grid">
+            <!-- Bookings API -->
+            <div class="card">
+                <h2><span class="emoji">✈️</span> Bookings API (Parallel)</h2>
+                <p style="color: #666; font-size: 14px; margin-bottom: 16px;">
+                    Flight + Hotel search in parallel - super fast!
+                </p>
+                <div class="input-group">
+                    <label>Origin</label>
+                    <input type="text" id="bookingOrigin" placeholder="Istanbul">
+                </div>
+                <div class="input-group">
+                    <label>Destination</label>
+                    <input type="text" id="bookingDestination" placeholder="Berlin">
+                </div>
+                <div class="input-group">
+                    <label>Start Date</label>
+                    <input type="date" id="bookingStartDate">
+                </div>
+                <div class="input-group">
+                    <label>End Date</label>
+                    <input type="date" id="bookingEndDate">
+                </div>
+                <div class="input-group">
+                    <label>Adults</label>
+                    <input type="number" id="bookingAdults" value="2">
+                </div>
+                <button onclick="testBookings()">🔍 Search Bookings (Parallel)</button>
+            </div>
+
+            <!-- Activities API -->
+            <div class="card">
+                <h2><span class="emoji">🗺️</span> Activities API</h2>
+                <p style="color: #666; font-size: 14px; margin-bottom: 16px;">
+                    AI-generated day-by-day itinerary
+                </p>
+                <div class="input-group">
+                    <label>Destination</label>
+                    <input type="text" id="activityDestination" placeholder="Berlin">
+                </div>
+                <div class="input-group">
+                    <label>Start Date</label>
+                    <input type="date" id="activityStartDate">
+                </div>
+                <div class="input-group">
+                    <label>End Date</label>
+                    <input type="date" id="activityEndDate">
+                </div>
+                <div class="input-group">
+                    <label>Preferences (comma-separated)</label>
+                    <input type="text" id="activityPreferences" placeholder="museums, food, culture">
+                </div>
+                <button onclick="testActivities()">📅 Plan Activities</button>
+            </div>
+        </div>
+
         <!-- Interactive Plan (for frontend testing) -->
         <div class="card">
             <h2><span class="emoji">🎯</span> Interactive Plan (Frontend Format)</h2>
@@ -586,6 +642,221 @@
                 </div>
             `;
             
+            uiContent.innerHTML = html;
+            document.getElementById('jsonContent').textContent = JSON.stringify(data, null, 2);
+            showResult();
+        }
+
+        async function testBookings() {
+            const origin = document.getElementById('bookingOrigin').value || 'Istanbul';
+            const destination = document.getElementById('bookingDestination').value;
+            const startDate = document.getElementById('bookingStartDate').value;
+            const endDate = document.getElementById('bookingEndDate').value;
+            const adults = parseInt(document.getElementById('bookingAdults').value) || 2;
+
+            if (!destination || !startDate || !endDate) {
+                alert('Lütfen tüm alanları doldurun!');
+                return;
+            }
+
+            showLoading();
+
+            try {
+                const response = await fetch(`${API_BASE}/bookings`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        origin,
+                        destination,
+                        start_date: startDate,
+                        end_date: endDate,
+                        adults
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'API error');
+                }
+
+                displayBookingsResult(data);
+            } catch (error) {
+                displayError(error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function testActivities() {
+            const destination = document.getElementById('activityDestination').value;
+            const startDate = document.getElementById('activityStartDate').value;
+            const endDate = document.getElementById('activityEndDate').value;
+            const preferencesStr = document.getElementById('activityPreferences').value;
+            const preferences = preferencesStr ? preferencesStr.split(',').map(s => s.trim()) : [];
+
+            if (!destination || !startDate || !endDate) {
+                alert('Lütfen tüm alanları doldurun!');
+                return;
+            }
+
+            showLoading();
+
+            try {
+                const response = await fetch(`${API_BASE}/activities`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        destination,
+                        start_date: startDate,
+                        end_date: endDate,
+                        adults: 2,
+                        preferences,
+                        budget: 'mid',
+                        language: 'tr'
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || 'API error');
+                }
+
+                displayActivitiesResult(data);
+            } catch (error) {
+                displayError(error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function displayBookingsResult(data) {
+            const uiContent = document.getElementById('uiContent');
+            
+            let html = `
+                <div class="success">✅ Booking Results (Parallel Search Complete!)</div>
+                
+                <h3>💰 Pricing Estimate</h3>
+                <div class="stats">
+                    <div class="stat">
+                        <div class="stat-value">${data.pricing?.flights || 0}</div>
+                        <div class="stat-label">Flights (${data.pricing?.currency})</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value">${data.pricing?.hotels || 0}</div>
+                        <div class="stat-label">Hotels (${data.pricing?.currency})</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value">${data.pricing?.total || 0}</div>
+                        <div class="stat-label">Total</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value">${data.pricing?.per_person || 0}</div>
+                        <div class="stat-label">Per Person</div>
+                    </div>
+                </div>
+            `;
+
+            // Flights
+            if (data.flights?.outbound) {
+                const flight = data.flights.outbound;
+                html += `
+                    <h3>✈️ Selected Flight</h3>
+                    <div class="time-slot">
+                        <div style="display: flex; justify-content: space-between;">
+                            <div>
+                                <strong>${flight.airline} ${flight.flightNumber || ''}</strong><br>
+                                <span style="color: #666;">${flight.origin || flight.fromIata} → ${flight.destination || flight.toIata}</span>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 20px; font-weight: 700; color: #667eea;">
+                                    ${flight.price || 0} ${flight.currency}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Hotels
+            if (data.hotels?.selected) {
+                const hotel = data.hotels.selected;
+                html += `
+                    <h3>🏨 Selected Hotel</h3>
+                    <div class="time-slot">
+                        <div style="display: flex; justify-content: space-between;">
+                            <div>
+                                <strong>${hotel.name || 'Hotel'}</strong><br>
+                                <span style="color: #666;">${hotel.location || ''}</span>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="font-size: 20px; font-weight: 700; color: #667eea;">
+                                    ${hotel.priceTotal || 0} ${hotel.currency}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            uiContent.innerHTML = html;
+            document.getElementById('jsonContent').textContent = JSON.stringify(data, null, 2);
+            showResult();
+        }
+
+        function displayActivitiesResult(data) {
+            const uiContent = document.getElementById('uiContent');
+            
+            let html = `
+                <div class="success">✅ Activities Plan Generated!</div>
+                
+                <h3>📝 Summary</h3>
+                <div style="background: #f8f9fa; padding: 16px; border-radius: 8px; margin-bottom: 20px;">
+                    ${data.summary || 'Activity plan created'}
+                </div>
+            `;
+
+            if (data.days && data.days.length > 0) {
+                html += `<h3>📅 Daily Itinerary</h3>`;
+                
+                data.days.forEach(day => {
+                    html += `
+                        <div class="time-slot">
+                            <div class="time-slot-header">
+                                <span>Day ${day.day}: ${day.title || ''}</span>
+                                <span class="day-badge">${day.dateISO || ''}</span>
+                            </div>
+                            <div style="color: #666; margin-bottom: 12px;">${day.description || ''}</div>
+                    `;
+                    
+                    if (day.blocks) {
+                        day.blocks.forEach(block => {
+                            html += `
+                                <div style="margin-left: 16px; margin-bottom: 12px; padding: 12px; background: #fafafa; border-radius: 6px;">
+                                    <strong>${block.label} ${block.time || ''}</strong><br>
+                                    <div style="color: #666; font-size: 14px;">${block.description || ''}</div>
+                                </div>
+                            `;
+                        });
+                    }
+                    
+                    html += `</div>`;
+                });
+            }
+
+            if (data.tips && data.tips.length > 0) {
+                html += `<h3>💡 Travel Tips</h3><div class="time-slot">`;
+                data.tips.forEach(tip => {
+                    html += `<div style="margin-bottom: 8px;">• ${tip}</div>`;
+                });
+                html += `</div>`;
+            }
+
             uiContent.innerHTML = html;
             document.getElementById('jsonContent').textContent = JSON.stringify(data, null, 2);
             showResult();
