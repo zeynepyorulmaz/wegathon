@@ -1,0 +1,62 @@
+{
+  "departure": {
+    "city": "İstanbul",
+    "country": "TR",
+    "detected": false
+  },
+  "destination": {
+    "city": "Berlin",
+    "country": "DE",
+    "detected": true
+  },
+  "dates": {
+    "start_date": "2025-10-15",
+    "duration": 4,
+    "end_date": "2025-10-18"
+  },
+  "travelers": {
+    "composition": "couple",
+    "count": 2
+  },
+  "budget": {
+    "amount": null,
+    "currency": "TRY",
+    "per_person": false,
+    "specified": false
+  },
+  "travel_style": {
+    "type": "mid_range"
+  },
+  "preferences": [],
+  "special_occasions": [],
+  "parsing_metadata": {
+    "confidence_score": 70,
+    "missing_critical": [],
+    "ambiguities": [
+      {
+        "field": "departure",
+        "issue": "departure city not specified; assumed Istanbul (TR) and defaulted",
+        "assumed_value": {
+          "city": "İstanbul",
+          "country": "TR",
+          "detected": false
+        }
+      }
+    ],
+    "assumptions_made": [
+      {
+        "field": "departure",
+        "issue": "departure city not specified; assumed Istanbul (TR) and defaulted",
+        "assumed_value": {
+          "city": "İstanbul",
+          "country": "TR",
+          "detected": false
+        }
+      }
+    ],
+    "needs_clarification": true,
+    "clarification_questions": [
+      "Hangi şehirden gideceksiniz?"
+    ]
+  }
+}
