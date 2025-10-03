@@ -11,7 +11,9 @@ from app.services import anthropic_client
 from app.models.plan import TripPlan
 
 # Cache for AI-generated activities (key: f"{destination}_{num_days}_{language}")
+# Limited size to prevent memory issues
 _ACTIVITY_CACHE: Dict[str, Dict[str, Any]] = {}
+_MAX_CACHE_SIZE = 100
 
 
 async def plan_activities(
@@ -314,48 +316,74 @@ def _calculate_day_constraints(
     for day in range(1, num_days + 1):
         if day == 1:
             # First day: Start after flight arrival + check-in
-            if flight_arrival_time:
+            if flight_arrival_time and isinstance(flight_arrival_time, str) and ":" in flight_arrival_time:
                 # Parse arrival time and add 2 hours for immigration/transport/check-in
                 try:
-                    hour, minute = map(int, flight_arrival_time.split(":"))
-                    arrival_minutes = hour * 60 + minute
-                    start_minutes = arrival_minutes + 120  # +2 hours buffer
-                    
-                    # Ensure not before hotel check-in
-                    checkin_h, checkin_m = map(int, hotel_checkin_time.split(":"))
-                    checkin_minutes = checkin_h * 60 + checkin_m
-                    start_minutes = max(start_minutes, checkin_minutes + 30)  # 30min after check-in
-                    
-                    start_h = start_minutes // 60
-                    start_m = start_minutes % 60
-                    day_start = f"{start_h:02d}:{start_m:02d}"
-                except:
+                    parts = flight_arrival_time.split(":")
+                    if len(parts) >= 2:
+                        hour = int(parts[0])
+                        minute = int(parts[1])
+                        arrival_minutes = hour * 60 + minute
+                        start_minutes = arrival_minutes + 120  # +2 hours buffer
+                        
+                        # Ensure not before hotel check-in
+                        if hotel_checkin_time and ":" in hotel_checkin_time:
+                            checkin_parts = hotel_checkin_time.split(":")
+                            if len(checkin_parts) >= 2:
+                                checkin_h = int(checkin_parts[0])
+                                checkin_m = int(checkin_parts[1])
+                                checkin_minutes = checkin_h * 60 + checkin_m
+                                start_minutes = max(start_minutes, checkin_minutes + 30)  # 30min after check-in
+                        
+                        # Cap at reasonable time (not past midnight)
+                        start_minutes = min(start_minutes, 22 * 60)  # Max 22:00
+                        
+                        start_h = start_minutes // 60
+                        start_m = start_minutes % 60
+                        day_start = f"{start_h:02d}:{start_m:02d}"
+                    else:
+                        day_start = "16:00"
+                except Exception as e:
+                    logger.warning(f"Error parsing flight arrival time: {e}")
                     day_start = "16:00"  # Default late afternoon
             else:
-                day_start = hotel_checkin_time
+                day_start = hotel_checkin_time if hotel_checkin_time else "14:00"
             
             constraints.append({"day": day, "start": day_start, "end": "22:00"})
             
         elif day == num_days:
             # Last day: End before checkout + flight
-            if flight_departure_time:
+            if flight_departure_time and isinstance(flight_departure_time, str) and ":" in flight_departure_time:
                 try:
-                    hour, minute = map(int, flight_departure_time.split(":"))
-                    depart_minutes = hour * 60 + minute
-                    end_minutes = depart_minutes - 180  # -3 hours before flight
-                    
-                    # Ensure not after hotel checkout
-                    checkout_h, checkout_m = map(int, hotel_checkout_time.split(":"))
-                    checkout_minutes = checkout_h * 60 + checkout_m
-                    end_minutes = min(end_minutes, checkout_minutes - 30)  # 30min before checkout
-                    
-                    end_h = end_minutes // 60
-                    end_m = end_minutes % 60
-                    day_end = f"{end_h:02d}:{end_m:02d}"
-                except:
+                    parts = flight_departure_time.split(":")
+                    if len(parts) >= 2:
+                        hour = int(parts[0])
+                        minute = int(parts[1])
+                        depart_minutes = hour * 60 + minute
+                        end_minutes = depart_minutes - 180  # -3 hours before flight
+                        
+                        # Ensure not after hotel checkout
+                        if hotel_checkout_time and ":" in hotel_checkout_time:
+                            checkout_parts = hotel_checkout_time.split(":")
+                            if len(checkout_parts) >= 2:
+                                checkout_h = int(checkout_parts[0])
+                                checkout_m = int(checkout_parts[1])
+                                checkout_minutes = checkout_h * 60 + checkout_m
+                                end_minutes = min(end_minutes, checkout_minutes - 30)  # 30min before checkout
+                        
+                        # Don't allow negative or too early times
+                        end_minutes = max(end_minutes, 8 * 60)  # Min 08:00
+                        
+                        end_h = end_minutes // 60
+                        end_m = end_minutes % 60
+                        day_end = f"{end_h:02d}:{end_m:02d}"
+                    else:
+                        day_end = "10:00"
+                except Exception as e:
+                    logger.warning(f"Error parsing flight departure time: {e}")
                     day_end = "10:00"  # Default morning
             else:
-                day_end = hotel_checkout_time
+                day_end = hotel_checkout_time if hotel_checkout_time else "11:00"
             
             constraints.append({"day": day, "start": "08:00", "end": day_end})
         else:
@@ -470,39 +498,73 @@ Generate realistic time slots with 4 REAL options each."""
                 else:
                     raise
         
-        # Parse AI response
-        text = "".join([b.get("text", "") for b in response.get("content", []) if b.get("type") == "text"])
+        # Parse AI response safely
+        content = response.get("content", [])
+        if not content or not isinstance(content, list):
+            raise ValueError("No content in AI response")
+        
+        text = "".join([
+            b.get("text", "") 
+            for b in content 
+            if isinstance(b, dict) and b.get("type") == "text"
+        ])
+        
+        if not text or len(text) < 10:
+            raise ValueError("AI response too short or empty")
         
         import json
         json_start = text.find("{")
         json_end = text.rfind("}") + 1
         
-        if json_start != -1 and json_end > json_start:
+        if json_start == -1 or json_end <= json_start:
+            raise ValueError("No valid JSON found in AI response")
+        
+        try:
             data = json.loads(text[json_start:json_end])
-            slots = data.get("time_slots", [])
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parse error: {e}, text: {text[:200]}")
+            raise ValueError(f"Invalid JSON from AI: {e}")
+        
+        if not isinstance(data, dict):
+            raise ValueError("AI response is not a dict")
+        
+        slots = data.get("time_slots", [])
+        if not isinstance(slots, list):
+            raise ValueError("time_slots is not a list")
+        
+        formatted = []
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            opts = slot.get("options", [])
+            if not isinstance(opts, list):
+                opts = []
             
-            formatted = []
-            for slot in slots:
-                opts = slot.get("options", [])
-                formatted.append({
-                    "day": slot.get("day"),
-                    "date": (datetime.fromisoformat(start_date) + timedelta(days=slot.get("day", 1) - 1)).isoformat(),
-                    "time": slot.get("time"),
-                    "label": slot.get("label"),
-                    "selected": opts[0] if opts else None,
-                    "alternatives": opts[1:4] if len(opts) > 1 else []
-                })
-            
-            result = {
-                "time_slots": formatted,
-                "summary": f"{num_days} günlük {destination} - Gerçek yerler, uçuş/otel saatlerine göre" if language == "tr" else f"{num_days}-day {destination} - Real places, flight/hotel adjusted",
-                "tips": _get_destination_tips(destination, language),
-                "constraints": day_constraints
-            }
-            
-            _ACTIVITY_CACHE[cache_key] = result
-            logger.info(f"✅ AI activities generated and cached for {destination}")
-            return result
+            formatted.append({
+                "day": slot.get("day", 1),
+                "date": (datetime.fromisoformat(start_date) + timedelta(days=slot.get("day", 1) - 1)).isoformat(),
+                "time": slot.get("time", "09:00-12:00"),
+                "label": slot.get("label", "morning"),
+                "selected": opts[0] if opts else None,
+                "alternatives": opts[1:4] if len(opts) > 1 else []
+            })
+        
+        # Build result after loop
+        result = {
+            "time_slots": formatted,
+            "summary": f"{num_days} günlük {destination} - Gerçek yerler, uçuş/otel saatlerine göre" if language == "tr" else f"{num_days}-day {destination} - Real places, flight/hotel adjusted",
+            "tips": _get_destination_tips(destination, language),
+            "constraints": day_constraints
+        }
+        
+        # Cache with size limit
+        if len(_ACTIVITY_CACHE) >= _MAX_CACHE_SIZE:
+            # Remove oldest entry (simple FIFO)
+            _ACTIVITY_CACHE.pop(next(iter(_ACTIVITY_CACHE)))
+        
+        _ACTIVITY_CACHE[cache_key] = result
+        logger.info(f"✅ AI activities generated and cached for {destination}")
+        return result
             
     except Exception as e:
         logger.error(f"AI failed ({e}), using fallback")
@@ -518,39 +580,53 @@ def _generate_template_activities(
     day_constraints: List[Dict[str, str]],
     language: str
 ) -> Dict[str, Any]:
-    """Fallback: template-based activities."""
+    """Fallback: template-based activities when AI fails."""
     time_slots = []
     
+    if not day_constraints or not isinstance(day_constraints, list):
+        logger.warning("No day constraints, using defaults")
+        day_constraints = [{"day": i, "start": "08:00", "end": "22:00"} for i in range(1, num_days + 1)]
+    
     for constraint in day_constraints:
-        day = constraint["day"]
-        day_date = datetime.fromisoformat(start_date) + timedelta(days=day - 1)
+        if not isinstance(constraint, dict):
+            continue
+        
+        day = constraint.get("day", 1)
+        
+        try:
+            day_date = datetime.fromisoformat(start_date) + timedelta(days=day - 1)
+        except:
+            day_date = datetime.now()
         
         # Simple time blocks for fallback
         blocks = [("09:00-12:00", "morning"), ("14:00-18:00", "afternoon"), ("19:00-22:00", "evening")]
         
         for time_range, label in blocks:
-            alternatives = _get_activity_alternatives(
-                destination=destination,
-                day=day,
-                time_label=label,
-                preferences=[],
-                children=0,
-                language=language
-            )
+            try:
+                alternatives = _get_activity_alternatives(
+                    destination=destination or "Unknown",
+                    day=day,
+                    time_label=label,
+                    preferences=[],
+                    children=0,
+                    language=language
+                )
+            except:
+                alternatives = []
             
             time_slots.append({
                 "day": day,
                 "date": day_date.isoformat(),
                 "time": time_range,
                 "label": label,
-                "selected": alternatives[0] if alternatives else None,
-                "alternatives": alternatives[1:] if len(alternatives) > 1 else []
+                "selected": alternatives[0] if alternatives and len(alternatives) > 0 else {"title": "Serbest zaman", "description": "Keşfe çıkın", "duration": ""},
+                "alternatives": alternatives[1:4] if len(alternatives) > 1 else []
             })
     
     return {
         "time_slots": time_slots,
         "summary": f"{num_days} günlük {destination}" if language == "tr" else f"{num_days}-day {destination}",
-        "tips": _get_destination_tips(destination, language)
+        "tips": _get_destination_tips(destination or "destination", language)
     }
 
 

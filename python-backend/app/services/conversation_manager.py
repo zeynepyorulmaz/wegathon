@@ -160,32 +160,41 @@ async def process_conversation_turn(
             # Get activities with flight/hotel time constraints
             from app.services.activity_service import plan_activities
             
-            # Extract flight times
+            # Extract flight times safely
             flight_arrival = None
             flight_departure = None
             
-            if bookings.get("flights", {}).get("outbound"):
-                outbound = bookings["flights"]["outbound"]
-                if outbound.get("segments") and len(outbound["segments"]) > 0:
-                    # Get arrival time from first flight
-                    arrive_iso = outbound["segments"][-1].get("arriveISO", "")
-                    if arrive_iso:
-                        try:
-                            arrive_dt = datetime.fromisoformat(arrive_iso.replace("Z", "+00:00"))
-                            flight_arrival = arrive_dt.strftime("%H:%M")
-                        except:
-                            pass
-            
-            if bookings.get("flights", {}).get("inbound"):
-                inbound = bookings["flights"]["inbound"]
-                if inbound.get("segments") and len(inbound["segments"]) > 0:
-                    depart_iso = inbound["segments"][0].get("departISO", "")
-                    if depart_iso:
-                        try:
-                            depart_dt = datetime.fromisoformat(depart_iso.replace("Z", "+00:00"))
-                            flight_departure = depart_dt.strftime("%H:%M")
-                        except:
-                            pass
+            try:
+                if bookings and isinstance(bookings, dict):
+                    flights = bookings.get("flights", {})
+                    
+                    if flights and isinstance(flights, dict):
+                        # Get arrival from outbound
+                        outbound = flights.get("outbound")
+                        if outbound and isinstance(outbound, dict):
+                            segments = outbound.get("segments", [])
+                            if segments and isinstance(segments, list) and len(segments) > 0:
+                                arrive_iso = segments[-1].get("arriveISO", "")
+                                if arrive_iso:
+                                    # Handle both Z and +00:00 timezone formats
+                                    arrive_iso_clean = arrive_iso.replace("Z", "+00:00")
+                                    arrive_dt = datetime.fromisoformat(arrive_iso_clean)
+                                    flight_arrival = arrive_dt.strftime("%H:%M")
+                                    logger.info(f"Flight arrival time: {flight_arrival}")
+                        
+                        # Get departure from inbound (if exists)
+                        inbound = flights.get("inbound")
+                        if inbound and isinstance(inbound, dict):
+                            segments = inbound.get("segments", [])
+                            if segments and isinstance(segments, list) and len(segments) > 0:
+                                depart_iso = segments[0].get("departISO", "")
+                                if depart_iso:
+                                    depart_iso_clean = depart_iso.replace("Z", "+00:00")
+                                    depart_dt = datetime.fromisoformat(depart_iso_clean)
+                                    flight_departure = depart_dt.strftime("%H:%M")
+                                    logger.info(f"Flight departure time: {flight_departure}")
+            except Exception as e:
+                logger.warning(f"Could not extract flight times: {e}")
             
             activities = await plan_activities(
                 destination=session.collected_data.get("destination"),
@@ -278,9 +287,10 @@ async def process_conversation_turn(
             instruction_lower = revision_instruction.lower()
             
             # Check if user wants to change flight or hotel
-            if "uçuş" in instruction_lower or "flight" in instruction_lower and "değiştir" in instruction_lower or "change" in instruction_lower:
-                # Show flight alternatives
-                alternatives = session.current_plan.get("alternatives", {}).get("flights", [])
+            if "uçuş" in instruction_lower or "flight" in instruction_lower and ("değiştir" in instruction_lower or "change" in instruction_lower):
+                # Show flight alternatives safely
+                plan_alts = session.current_plan.get("alternatives", {}) if session.current_plan else {}
+                alternatives = plan_alts.get("flights", []) if isinstance(plan_alts, dict) else []
                 
                 if alternatives:
                     if language == "tr":
@@ -303,9 +313,10 @@ async def process_conversation_turn(
                 current_plan = TripPlan.model_validate(session.current_plan) if session.current_plan else None
                 needs_more_info = False
                 
-            elif "otel" in instruction_lower or "hotel" in instruction_lower and "değiştir" in instruction_lower or "change" in instruction_lower:
-                # Show hotel alternatives
-                alternatives = session.current_plan.get("alternatives", {}).get("hotels", [])
+            elif "otel" in instruction_lower or "hotel" in instruction_lower and ("değiştir" in instruction_lower or "change" in instruction_lower):
+                # Show hotel alternatives safely
+                plan_alts = session.current_plan.get("alternatives", {}) if session.current_plan else {}
+                alternatives = plan_alts.get("hotels", []) if isinstance(plan_alts, dict) else []
                 
                 if alternatives:
                     if language == "tr":
@@ -333,24 +344,34 @@ async def process_conversation_turn(
                 import re
                 numbers = re.findall(r'\d+', revision_instruction)
                 
-                if numbers:
+                if numbers and session.current_plan:
                     selection = int(numbers[0]) - 1  # 0-indexed
                     
                     if "uçuş" in instruction_lower or "flight" in instruction_lower:
-                        alternatives = session.current_plan.get("alternatives", {}).get("flights", [])
+                        plan_alts = session.current_plan.get("alternatives", {}) if session.current_plan else {}
+                        alternatives = plan_alts.get("flights", []) if isinstance(plan_alts, dict) else []
+                        
                         if 0 <= selection < len(alternatives):
+                            if "selected" not in session.current_plan:
+                                session.current_plan["selected"] = {}
                             session.current_plan["selected"]["flight"] = alternatives[selection]
                             ai_message = "✅ Uçuş seçiminiz güncellendi! Plan güncel haliyle gösteriliyor." if language == "tr" else "✅ Flight updated! Showing updated plan."
                         else:
-                            ai_message = "Geçersiz seçim." if language == "tr" else "Invalid selection."
+                            ai_message = f"Geçersiz seçim. Lütfen 1-{len(alternatives)} arası bir numara girin." if language == "tr" else f"Invalid selection. Please choose 1-{len(alternatives)}."
                     
                     elif "otel" in instruction_lower or "hotel" in instruction_lower:
-                        alternatives = session.current_plan.get("alternatives", {}).get("hotels", [])
+                        plan_alts = session.current_plan.get("alternatives", {}) if session.current_plan else {}
+                        alternatives = plan_alts.get("hotels", []) if isinstance(plan_alts, dict) else []
+                        
                         if 0 <= selection < len(alternatives):
+                            if "selected" not in session.current_plan:
+                                session.current_plan["selected"] = {}
                             session.current_plan["selected"]["hotel"] = alternatives[selection]
                             ai_message = "✅ Otel seçiminiz güncellendi! Plan güncel haliyle gösteriliyor." if language == "tr" else "✅ Hotel updated! Showing updated plan."
                         else:
-                            ai_message = "Geçersiz seçim." if language == "tr" else "Invalid selection."
+                            ai_message = f"Geçersiz seçim. Lütfen 1-{len(alternatives)} arası bir numara girin." if language == "tr" else f"Invalid selection. Please choose 1-{len(alternatives)}."
+                else:
+                    ai_message = "Lütfen seçmek istediğiniz numarayı belirtin (örn: '2. uçuşu seç')" if language == "tr" else "Please specify the number (e.g., 'select flight 2')"
                 
                 # Return updated plan
                 current_plan = TripPlan.model_validate(session.current_plan) if session.current_plan else None

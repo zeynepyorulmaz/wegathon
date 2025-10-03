@@ -179,21 +179,26 @@ async def get_bookings_parallel(
 
 def _parse_flight_response(mcp_result: Dict[str, Any]) -> Dict[str, Any]:
     """Parse MCP flight response into structured format."""
+    if not mcp_result:
+        return {"outbound": None, "inbound": None, "alternatives": []}
+    
     # Handle MCP response format (could be wrapped in content array)
     content = mcp_result.get("content", [])
     
-    if content and isinstance(content, list):
+    if content and isinstance(content, list) and len(content) > 0:
         # MCP returns JSON in content array
         try:
             import json
-            data = json.loads(content[0].get("text", "{}"))
-        except:
+            text = content[0].get("text", "{}") if isinstance(content[0], dict) else "{}"
+            data = json.loads(text)
+        except Exception as e:
+            logger.warning(f"Failed to parse flight content: {e}")
             data = {}
     else:
         data = mcp_result
     
-    # Extract flights
-    flights = data.get("flights", [])
+    # Extract flights safely
+    flights = data.get("flights", []) if isinstance(data, dict) else []
     
     if not flights:
         return {
@@ -215,20 +220,25 @@ def _parse_flight_response(mcp_result: Dict[str, Any]) -> Dict[str, Any]:
 
 def _parse_hotel_response(mcp_result: Dict[str, Any]) -> Dict[str, Any]:
     """Parse MCP hotel response into structured format."""
+    if not mcp_result:
+        return {"selected": None, "alternatives": []}
+    
     # Handle MCP response format
     content = mcp_result.get("content", [])
     
-    if content and isinstance(content, list):
+    if content and isinstance(content, list) and len(content) > 0:
         try:
             import json
-            data = json.loads(content[0].get("text", "{}"))
-        except:
+            text = content[0].get("text", "{}") if isinstance(content[0], dict) else "{}"
+            data = json.loads(text)
+        except Exception as e:
+            logger.warning(f"Failed to parse hotel content: {e}")
             data = {}
     else:
         data = mcp_result
     
-    # Extract hotels
-    hotels = data.get("hotels", [])
+    # Extract hotels safely
+    hotels = data.get("hotels", []) if isinstance(data, dict) else []
     
     if not hotels:
         return {
@@ -254,27 +264,36 @@ def _calculate_booking_pricing(
 ) -> Dict[str, Any]:
     """Calculate total pricing estimate from flights and hotels."""
     
-    flight_price = 0
-    hotel_price = 0
+    flight_price = 0.0
+    hotel_price = 0.0
     
-    # Get flight price
-    if flights.get("outbound"):
-        flight_price = flights["outbound"].get("price", 0) or 0
+    # Get flight price safely
+    if flights and isinstance(flights, dict) and flights.get("outbound"):
+        try:
+            flight_price = float(flights["outbound"].get("price", 0) or 0)
+        except (TypeError, ValueError):
+            flight_price = 0.0
     
-    # Get hotel price
-    if hotels.get("selected"):
-        hotel_price = hotels["selected"].get("priceTotal", 0) or 0
+    # Get hotel price safely  
+    if hotels and isinstance(hotels, dict) and hotels.get("selected"):
+        try:
+            hotel_price = float(hotels["selected"].get("priceTotal", 0) or 0)
+        except (TypeError, ValueError):
+            hotel_price = 0.0
     
     total = flight_price + hotel_price
+    
+    # Prevent division by zero
+    num_people = max(1, adults)
     
     return {
         "flights": flight_price,
         "hotels": hotel_price,
         "total": total,
-        "currency": flights.get("outbound", {}).get("currency", "TRY"),
-        "per_person": total / adults if adults > 0 else total,
+        "currency": (flights or {}).get("outbound", {}).get("currency") or (hotels or {}).get("selected", {}).get("currency") or "TRY",
+        "per_person": total / num_people,
         "breakdown": {
-            "flights_per_person": flight_price / adults if adults > 0 else flight_price,
+            "flights_per_person": flight_price / num_people,
             "hotels_total": hotel_price
         }
     }
