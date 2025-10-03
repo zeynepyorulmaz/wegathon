@@ -113,12 +113,15 @@ def _is_proxy(base_url: str) -> bool:
 def _headers() -> Dict[str, str]:
     base = settings.mcp_base_url
     if _is_proxy(base):
-        # MCP Inspector proxy expects x-mcp-proxy-auth with Bearer token
-        hdrs = {"Content-Type": "application/json"}
+        # MCP proxy server expects specific headers
+        hdrs = {
+            "Content-Type": "application/json",
+            "accept": "application/json, text/event-stream",
+            "authorization": "123Bearer",  # Enuygun MCP proxy format
+            "mcp-protocol-version": "2025-06-18"
+        }
         if settings.mcp_api_key:
             hdrs["x-mcp-proxy-auth"] = f"Bearer {settings.mcp_api_key}"
-        # protocol version header is optional but harmless
-        hdrs["mcp-protocol-version"] = "2025-06-18"
         return hdrs
     # Direct mode (OAuth bearer)
     hdrs = {"Content-Type": "application/json"}
@@ -128,67 +131,30 @@ def _headers() -> Dict[str, str]:
 
 
 async def _mcp_call(tool: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    global _rpc_id
-    base = settings.mcp_base_url.rstrip("/")
-    url = base + "/mcp"
-    headers = _headers()
-    async with httpx.AsyncClient(timeout=60) as http:
-        if _is_proxy(base):
-            # JSON-RPC envelope for MCP proxy
-            payload = {
-                "method": "tools/call",
-                "params": {"name": tool, "arguments": arguments, "_meta": {"progressToken": _rpc_id}},
-                "jsonrpc": "2.0",
-                "id": _rpc_id,
-            }
-            _rpc_id += 1
-        else:
-            # Fallback simple envelope if server supports it (may 400 otherwise)
-            payload = {"tool": tool, "arguments": arguments}
-        r = await http.post(url, json=payload, headers=headers)
-        r.raise_for_status()
-        data = r.json()
-        # Unwrap JSON-RPC result if present
-        if isinstance(data, dict) and "result" in data:
-            return data["result"]
-        return data
+    """
+    Call MCP tool using full MCP client with protocol handling.
+    """
+    try:
+        from app.services.mcp_client import get_mcp_client
+        mcp_client = get_mcp_client()
+        result = await mcp_client.call_tool(tool, arguments)
+        return result
+    except Exception as e:
+        logger.error(f"MCP tool call failed: {e}")
+        return {"error": str(e)}
 
 
 async def fetch_mcp_tools_from_server() -> List[Dict[str, Any]]:
     """
-    Fetch available tools from MCP server using tools/list method.
+    Fetch available tools from MCP server using full MCP protocol.
     Returns list of tools in MCP format.
     """
-    global _rpc_id
-    base = settings.mcp_base_url.rstrip("/")
-    url = base + "/mcp"
-    headers = _headers()
-    
     try:
-        async with httpx.AsyncClient(timeout=30) as http:
-            if _is_proxy(base):
-                payload = {
-                    "method": "tools/list",
-                    "params": {},
-                    "jsonrpc": "2.0",
-                    "id": _rpc_id,
-                }
-                _rpc_id += 1
-            else:
-                payload = {"method": "tools/list"}
-            
-            r = await http.post(url, json=payload, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            
-            # Unwrap JSON-RPC result if present
-            if isinstance(data, dict) and "result" in data:
-                result = data["result"]
-                # MCP tools/list returns {tools: [...]}
-                if isinstance(result, dict) and "tools" in result:
-                    return result["tools"]
-                return []
-            return []
+        # Use full MCP client with initialize handshake
+        from app.services.mcp_client import get_mcp_client
+        mcp_client = get_mcp_client()
+        tools = await mcp_client.list_tools()
+        return tools
     except Exception as e:
         logger.warning(f"Failed to fetch MCP tools from server: {e}")
         return []

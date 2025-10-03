@@ -69,9 +69,68 @@ Server will be available at `http://localhost:4000`
 
 ## API Endpoints
 
+### 💬 Interactive Conversation Flow (Recommended)
+
+**New!** Collect missing trip information through a conversational interface.
+
+#### `POST /api/plan/validate`
+Validate user prompt and identify missing information.
+
+**Request:**
+```json
+{
+  "prompt": "I want to visit Paris",
+  "language": "en"
+}
+```
+
+**Response:**
+```json
+{
+  "ready_to_plan": false,
+  "question": {
+    "field": "origin",
+    "question": "Where are you traveling from?",
+    "type": "text",
+    "example": "Istanbul"
+  },
+  "session_id": "uuid",
+  "remaining_questions": 2
+}
+```
+
+#### `POST /api/plan/answer`
+Submit answer to a trip planning question.
+
+**Request:**
+```json
+{
+  "session_id": "uuid",
+  "answer": "Istanbul"
+}
+```
+
+**Response:** Next question or `ready_to_plan: true`
+
+#### `POST /api/plan/create`
+Create plan from collected conversation data.
+
+**Request:**
+```json
+{
+  "session_id": "uuid",
+  "language": "en",
+  "currency": "EUR"
+}
+```
+
+**Response:** Full `TripPlan` JSON
+
+See [CONVERSATION_GUIDE.md](CONVERSATION_GUIDE.md) for detailed documentation.
+
 ### `POST /api/plan`
 
-Generate a new travel plan.
+Generate a new travel plan (direct, no conversation).
 
 **Request:**
 ```json

@@ -12,6 +12,7 @@ Our travel planner doesn't just find flights and hotels. It creates **comprehens
 - 🎭 **Cultural Intelligence**: Local customs, best visiting times, authentic food recommendations
 - ⏰ **Realistic Pacing**: Mix high/low energy activities, include rest time, avoid over-scheduling
 - 🚇 **Local Transport**: Metro passes, walking distances, travel times between locations
+- 💬 **Interactive Conversation** - Akıllıca sorular sorar ve eksik bilgileri toplar (YENİ!)
 
 ## 🏗️ Architecture
 
