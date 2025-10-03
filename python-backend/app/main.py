@@ -5,7 +5,7 @@ from app.routers.plan import router as api_router
 
 app = FastAPI(
     title="AIKU - AI Travel Planner API",
-    version="1.0.0",
+    version="1.1.0",
     description="""
 ## 🌍 AI-Powered Travel Planning System
 
