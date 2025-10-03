@@ -1,509 +1,274 @@
 "use client";
 
-import { Suspense, useState, useEffect, useCallback } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import {
-  ChevronLeft,
-  MapPin,
-  Plane,
-  Hotel,
-  Utensils,
-  Camera,
-  Calendar,
-  Check,
-  Sparkles,
-  Share2,
-  Edit3,
-} from "lucide-react";
+import { ChevronLeft, Loader2, Sparkles, Calendar, MapPin } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
-import type { Question } from "@/utils/questionnaire";
 
 function FullPlanContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const prompt = searchParams.get("prompt");
   const [isLoading, setIsLoading] = useState(true);
-  const [questions, setQuestions] = useState<Question[] | null>(null);
-  const [answers, setAnswers] = useState<number[][]>([]);
-  const [isReviseMode, setIsReviseMode] = useState(false);
-  const [newPrompt, setNewPrompt] = useState("");
-  const totalDays = 3;
+  const [plan, setPlan] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, number>>({});
 
-  // Mock data generation
   useEffect(() => {
-    const loadMockData = async () => {
-      // Wait for 3 seconds
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-
-      // Generate mock questions and answers
-      const mockQuestions: Question[] = [
-        {
-          day: 1,
-          startTime: "08:00",
-          endTime: "10:00",
-          category: "breakfast",
-          options: [
-            { text: "Café Einstein", description: "Classic Viennese coffeehouse", imageId: 1 },
-            { text: "Benedict", description: "All-day breakfast spot", imageId: 2 },
-          ],
-        },
-        {
-          day: 1,
-          startTime: "10:00",
-          endTime: "13:00",
-          category: "culture",
-          options: [
-            { text: "Brandenburg Gate", description: "Iconic landmark", imageId: 3 },
-            { text: "Reichstag Building", description: "Historic parliament", imageId: 4 },
-          ],
-        },
-        {
-          day: 1,
-          startTime: "13:00",
-          endTime: "15:00",
-          category: "lunch",
-          options: [
-            { text: "Curry 36", description: "Famous currywurst", imageId: 5 },
-            { text: "Markthalle Neun", description: "Food market", imageId: 6 },
-          ],
-        },
-        {
-          day: 2,
-          startTime: "09:00",
-          endTime: "12:00",
-          category: "culture",
-          options: [
-            { text: "Museum Island", description: "UNESCO World Heritage", imageId: 7 },
-            { text: "Berlin Wall Memorial", description: "Historical site", imageId: 8 },
-          ],
-        },
-        {
-          day: 2,
-          startTime: "12:00",
-          endTime: "14:00",
-          category: "lunch",
-          options: [
-            { text: "Burgermeister", description: "Under the train tracks", imageId: 9 },
-            { text: "Döner Kebab", description: "Turkish classic", imageId: 10 },
-          ],
-        },
-        {
-          day: 3,
-          startTime: "10:00",
-          endTime: "13:00",
-          category: "activity",
-          options: [
-            { text: "East Side Gallery", description: "Open-air gallery", imageId: 11 },
-            { text: "Tempelhof Park", description: "Former airport", imageId: 12 },
-          ],
-        },
-      ];
-
-      // Mock answers - select first option for each question
-      const mockAnswers: number[][] = mockQuestions.map(() => [0]);
-
-      setQuestions(mockQuestions);
-      setAnswers(mockAnswers);
-      setIsLoading(false);
-    };
-
-    loadMockData();
-  }, []);
-
-  const getCategoryIcon = useCallback((category?: string) => {
-    switch (category) {
-      case "breakfast":
-        return "🥐";
-      case "lunch":
-        return "🍽️";
-      case "dinner":
-        return "🍷";
-      case "culture":
-        return "🏛️";
-      case "activity":
-        return "🎯";
-      case "evening":
-        return "🌆";
-      case "nightlife":
-        return "🌙";
-      default:
-        return "⭐";
+    if (!prompt) {
+      router.push("/");
+      return;
     }
-  }, []);
 
-  const parseTimeToMinutes = useCallback((t: string): number => {
-    const [hh, mm] = t.split(":").map((v) => parseInt(v, 10));
-    return hh * 60 + mm;
-  }, []);
+    fetchPlan();
+  }, [prompt, router]);
 
-  const handleShare = useCallback(async () => {
-    if (!questions || !answers.length) return;
+  async function fetchPlan() {
+    setIsLoading(true);
+    setError(null);
 
-    console.log("Sharing plan:", { questions, answers, totalDays });
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const response = await fetch("http://localhost:4000/api/plan/interactive", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          language: "tr",
+          currency: "TRY",
+        }),
+      });
 
-    alert("Plan shared successfully! (Mock functionality)");
-  }, [questions, answers, totalDays]);
+      if (!response.ok) {
+        throw new Error("Plan oluşturulamadı");
+      }
 
-  const handleRevisePlan = useCallback(() => {
-    if (!questions || !answers.length) return;
+      const data = await response.json();
+      setPlan(data);
 
-    setIsReviseMode(true);
-    setNewPrompt(prompt || "");
-  }, [questions, answers.length, prompt]);
+      // Initialize selected options (default: first option for each slot)
+      const defaultSelections: Record<string, number> = {};
+      data.time_slots?.forEach((slot: any) => {
+        const key = `${slot.day}-${slot.startTime}-${slot.endTime}`;
+        defaultSelections[key] = 0; // First option selected by default
+      });
+      setSelectedOptions(defaultSelections);
+    } catch (err) {
+      console.error("Error fetching plan:", err);
+      setError(err instanceof Error ? err.message : "Bir hata oluştu");
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
-  const handleNewPromptSubmit = useCallback(async () => {
-    if (!newPrompt.trim()) return;
-
-    console.log("New prompt submitted:", newPrompt);
-
-    setIsReviseMode(false);
-    setNewPrompt("");
-
-    alert(`New prompt logged to console: "${newPrompt}"`);
-  }, [newPrompt]);
-
-  const handleCancelRevise = useCallback(() => {
-    setIsReviseMode(false);
-    setNewPrompt("");
-  }, []);
-
-  const renderTimeline = useCallback(() => {
-    if (!answers.length || !questions) return null;
-
-    const answeredQuestions = questions.slice(0, answers.length);
-    const dayGroups = answeredQuestions.reduce(
-      (acc, q, i) => {
-        if (!acc[q.day]) acc[q.day] = [];
-        const answerIndices = answers[i];
-        const primaryAnswerIndex = Array.isArray(answerIndices) ? answerIndices[0] : answerIndices;
-        acc[q.day].push({
-          question: q,
-          answerIndex: primaryAnswerIndex,
-          answerIndices: answerIndices,
-          index: i,
-        });
-        return acc;
-      },
-      {} as Record<
-        number,
-        Array<{
-          question: Question;
-          answerIndex: number;
-          answerIndices: number | number[];
-          index: number;
-        }>
-      >
-    );
-
-    const colors = [
-      "bg-emerald-400",
-      "bg-blue-400",
-      "bg-pink-400",
-      "bg-amber-400",
-      "bg-purple-400",
-      "bg-rose-400",
-      "bg-orange-400",
-      "bg-cyan-400",
-      "bg-indigo-400",
-    ];
-
-    return (
-      <div className="space-y-4">
-        {Object.entries(dayGroups).map(([day, items]) => {
-          const overallStart = parseTimeToMinutes(items[0].question.startTime);
-          const overallEnd = parseTimeToMinutes(items[items.length - 1].question.endTime);
-          const total = overallEnd - overallStart;
-
-          return (
-            <Card key={day} className="overflow-hidden">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Calendar className="h-5 w-5 text-primary" />
-                    <CardTitle className="text-lg">Day {day}</CardTitle>
-                  </div>
-                  <Badge variant="secondary">
-                    {items.length} {items.length === 1 ? "activity" : "activities"}
-                  </Badge>
-                </div>
-                <CardDescription>
-                  {items[0].question.startTime} - {items[items.length - 1].question.endTime}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="pb-4">
-                <div className="relative h-16 rounded-lg bg-gradient-to-r from-muted/50 to-muted overflow-hidden border">
-                  {items.map(({ question, answerIndex, index: i }) => {
-                    const start = parseTimeToMinutes(question.startTime);
-                    const end = parseTimeToMinutes(question.endTime);
-                    const leftPct = ((start - overallStart) / total) * 100;
-                    const widthPct = ((end - start) / total) * 100;
-                    const label = `${question.startTime}–${question.endTime}`;
-                    const optionText = question.options[answerIndex].text;
-
-                    return (
-                      <div
-                        key={i}
-                        className={cn(
-                          "absolute top-0 bottom-0 border-r-2 border-white/90",
-                          "flex items-center justify-center",
-                          "text-foreground font-semibold text-xs",
-                          "transition-all duration-300 hover:scale-y-105 hover:shadow-lg hover:z-10",
-                          "cursor-pointer group",
-                          colors[i % colors.length]
-                        )}
-                        style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                        title={`${label}\n${optionText}`}
-                      >
-                        <span className="px-2 truncate">{label}</span>
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors" />
-                      </div>
-                    );
-                  })}
-                </div>
-                <div
-                  className="mt-3 relative"
-                  style={{
-                    minHeight: `${
-                      Math.max(
-                        ...items.map(({ answerIndices }) => {
-                          const indices = Array.isArray(answerIndices)
-                            ? answerIndices
-                            : [answerIndices];
-                          return indices.length;
-                        })
-                      ) * 68
-                    }px`,
-                  }}
-                >
-                  {items.map(({ question, answerIndices, index: i }) => {
-                    const indices = Array.isArray(answerIndices) ? answerIndices : [answerIndices];
-                    const start = parseTimeToMinutes(question.startTime);
-                    const end = parseTimeToMinutes(question.endTime);
-                    const leftPct = ((start - overallStart) / total) * 100;
-                    const widthPct = ((end - start) / total) * 100;
-
-                    const paddingPct = 1;
-                    const adjustedLeftPct = leftPct + paddingPct;
-                    const adjustedWidthPct = widthPct - paddingPct * 2;
-
-                    return indices.map((answerIndex, subIndex) => (
-                      <div
-                        key={`${i}-${subIndex}`}
-                        className="absolute p-1.5 rounded-lg border bg-card hover:shadow-md transition-shadow z-10"
-                        style={{
-                          left: `${adjustedLeftPct}%`,
-                          width: `${adjustedWidthPct}%`,
-                          top: `${subIndex * 68}px`,
-                        }}
-                      >
-                        <div className="flex items-start gap-1.5">
-                          <span className="text-base shrink-0">
-                            {getCategoryIcon(question.category)}
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-xs font-medium text-muted-foreground">
-                              {question.startTime} - {question.endTime}
-                            </p>
-                            <p className="text-sm font-medium truncate mt-0.5">
-                              {question.options[answerIndex].text.split(/[,.-]/)[0]}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ));
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
-    );
-  }, [answers, questions, parseTimeToMinutes, getCategoryIcon]);
+  function handleOptionSelect(slotKey: string, optionIndex: number) {
+    setSelectedOptions((prev) => ({
+      ...prev,
+      [slotKey]: optionIndex,
+    }));
+  }
 
   if (isLoading) {
     return (
       <div className="space-y-6 animate-in fade-in duration-500">
-        {/* Header Section */}
-        <div className="space-y-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <h1 className="text-3xl font-bold tracking-tight">Full Trip Plan</h1>
-              {prompt && (
-                <p className="text-sm text-muted-foreground flex items-center gap-2">
-                  <MapPin className="h-4 w-4" />
-                  <span className="font-medium">{prompt}</span>
-                </p>
-              )}
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => router.push("/")} className="shrink-0">
-              <ChevronLeft className="h-4 w-4 mr-1" />
-              Back to Home
-            </Button>
-          </div>
+        <div className="flex items-start justify-between gap-4">
+          <h1 className="text-3xl font-bold">Full Trip Plan</h1>
+          <Button variant="ghost" size="sm" onClick={() => router.push("/")}>
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Back
+          </Button>
         </div>
 
-        {/* Status Card */}
-        <Card className="border-2 border-primary/20 bg-primary/5">
+        <Card className="border-2 border-primary/20">
           <CardHeader>
             <div className="flex items-center gap-2">
-              <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
-                <Plane className="h-5 w-5 text-primary animate-pulse" />
-              </div>
-              <div>
-                <CardTitle>Creating Your Complete Itinerary</CardTitle>
-                <CardDescription>
-                  Our AI is crafting a personalized travel plan just for you
-                </CardDescription>
-              </div>
+              <Loader2 className="h-5 w-5 text-primary animate-spin" />
+              <CardTitle>Planınız Oluşturuluyor</CardTitle>
             </div>
+            <CardDescription>
+              AI ekibimiz size özel bir plan hazırlıyor... (Bu 30-60 saniye sürebilir)
+            </CardDescription>
           </CardHeader>
         </Card>
+      </div>
+    );
+  }
 
-        {/* Call to Action */}
-        <Card className="border-2 border-dashed">
-          <CardContent className="pt-6">
-            <div className="text-center space-y-4">
-              <div className="mx-auto h-16 w-16 rounded-full bg-muted flex items-center justify-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-              </div>
-              <div className="space-y-2">
-                <h3 className="font-semibold text-lg">Processing Your Request</h3>
-                <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                  Best travel options are being analyzed...
-                </p>
-              </div>
-            </div>
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <h1 className="text-3xl font-bold">Full Trip Plan</h1>
+          <Button variant="ghost" size="sm" onClick={() => router.push("/")}>
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Back
+          </Button>
+        </div>
+
+        <Card className="border-2 border-destructive/20">
+          <CardHeader>
+            <CardTitle>Hata Oluştu</CardTitle>
+            <CardDescription>{error}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button onClick={() => fetchPlan()}>Tekrar Dene</Button>
           </CardContent>
         </Card>
       </div>
     );
   }
 
+  if (!plan) {
+    return null;
+  }
+
+  // Group time slots by day
+  const dayGroups = plan.time_slots?.reduce((acc: any, slot: any) => {
+    if (!acc[slot.day]) {
+      acc[slot.day] = [];
+    }
+    acc[slot.day].push(slot);
+    return acc;
+  }, {});
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
-      {/* Header Section */}
-      <div className="space-y-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-2">
-            <h1 className="text-3xl font-bold tracking-tight">Your Berlin Adventure Awaits! 🎉</h1>
-            {prompt && (
-              <p className="text-sm text-muted-foreground flex items-center gap-2">
-                <MapPin className="h-4 w-4" />
-                <span className="font-medium">{prompt}</span>
-              </p>
-            )}
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge variant="outline" className="gap-1">
-                <Calendar className="h-3 w-3" />
-                {totalDays} Days
-              </Badge>
-              <Badge variant="outline">{answers.length} Activities</Badge>
-            </div>
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-2">
+          <h1 className="text-3xl font-bold">
+            {plan.destination} Seyahat Planı
+          </h1>
+          {prompt && (
+            <p className="text-sm text-muted-foreground flex items-center gap-2">
+              <MapPin className="h-4 w-4" />
+              {prompt}
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">
+              <Calendar className="h-3 w-3 mr-1" />
+              {plan.total_days} Gün
+            </Badge>
+            <Badge variant="outline">{plan.time_slots?.length || 0} Zaman Dilimi</Badge>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => router.push("/")} className="shrink-0">
-            <ChevronLeft className="h-4 w-4 mr-1" />
-            Back
-          </Button>
         </div>
+        <Button variant="ghost" size="sm" onClick={() => router.push("/")}>
+          <ChevronLeft className="h-4 w-4 mr-1" />
+          Ana Sayfa
+        </Button>
       </div>
 
-      {/* Completion Section */}
-      {!isReviseMode && (
-        <Card className="border-2 border-primary shadow-xl">
-          <CardHeader className="text-center space-y-4">
-            <div className="mx-auto w-20 h-20 rounded-full bg-gradient-to-r from-primary to-primary/60 flex items-center justify-center">
-              <Check className="h-10 w-10 text-primary-foreground" />
-            </div>
-            <CardTitle className="text-2xl">Your Complete Itinerary is Ready!</CardTitle>
-            <CardDescription className="text-base max-w-2xl mx-auto">
-              We&apos;ve created your perfect {totalDays}-day Berlin adventure. Review your timeline
-              below.
-            </CardDescription>
-          </CardHeader>
-          <Separator />
-          <CardContent className="pt-6">
-            <div className="flex flex-col sm:flex-row gap-3 justify-center">
-              <Button size="lg" onClick={() => router.push("/")} className="w-full sm:w-auto">
-                <MapPin className="h-4 w-4 mr-2" />
-                Plan Another Trip
-              </Button>
-              <Button
-                size="lg"
-                variant="outline"
-                onClick={handleShare}
-                className="w-full sm:w-auto"
-              >
-                <Share2 className="h-4 w-4 mr-2" />
-                Share Plan
-              </Button>
-              <Button
-                size="lg"
-                variant="outline"
-                onClick={handleRevisePlan}
-                className="w-full sm:w-auto"
-              >
-                <Edit3 className="h-4 w-4 mr-2" />
-                Revise Plan
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Revise Plan Interface */}
-      {isReviseMode && (
-        <Card className="border-2 border-primary/20 shadow-lg">
+      {/* Summary */}
+      {plan.trip_summary && (
+        <Card>
           <CardHeader>
-            <div className="flex items-center gap-2">
-              <Edit3 className="h-5 w-5 text-primary" />
-              <CardTitle className="text-2xl">Revise Your Plan</CardTitle>
-            </div>
-            <CardDescription>
-              Provide a new prompt to regenerate your plan with different preferences.
-            </CardDescription>
+            <CardTitle className="text-lg">Plan Özeti</CardTitle>
           </CardHeader>
           <Separator />
-          <CardContent className="pt-6 space-y-6">
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">New Prompt</label>
-                <textarea
-                  value={newPrompt}
-                  onChange={(e) => setNewPrompt(e.target.value)}
-                  placeholder="Describe what you'd like to change about your plan..."
-                  className="w-full min-h-[100px] p-3 border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-                />
-              </div>
-              <div className="flex gap-3">
-                <Button
-                  onClick={handleNewPromptSubmit}
-                  disabled={!newPrompt.trim()}
-                  className="flex-1 sm:flex-none"
-                >
-                  <Sparkles className="h-4 w-4 mr-2" />
-                  Regenerate Plan
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleCancelRevise}
-                  className="flex-1 sm:flex-none"
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
+          <CardContent className="pt-4">
+            <p className="text-muted-foreground leading-relaxed">{plan.trip_summary}</p>
           </CardContent>
         </Card>
       )}
 
-      {/* Timeline */}
-      {renderTimeline()}
+      {/* Day by Day */}
+      {dayGroups &&
+        Object.entries(dayGroups).map(([day, slots]: [string, any]) => (
+          <Card key={day}>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle>Gün {day}</CardTitle>
+                <Badge variant="secondary">{slots.length} aktivite</Badge>
+              </div>
+            </CardHeader>
+            <Separator />
+            <CardContent className="pt-6 space-y-6">
+              {slots.map((slot: any, idx: number) => {
+                const slotKey = `${slot.day}-${slot.startTime}-${slot.endTime}`;
+                const selectedIndex = selectedOptions[slotKey] || 0;
+
+                return (
+                  <div key={idx} className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{slot.startTime}</Badge>
+                        <span className="text-muted-foreground">→</span>
+                        <Badge variant="outline">{slot.endTime}</Badge>
+                        <Badge>{slot.block_type}</Badge>
+                      </div>
+                    </div>
+
+                    {/* Options */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {slot.options?.map((option: any, optIdx: number) => (
+                        <div
+                          key={optIdx}
+                          onClick={() => handleOptionSelect(slotKey, optIdx)}
+                          className={`cursor-pointer p-4 rounded-lg border-2 transition-all ${
+                            selectedIndex === optIdx
+                              ? "border-primary bg-primary/5"
+                              : "border-border hover:border-primary/50 hover:bg-muted/50"
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div
+                              className={`mt-1 h-5 w-5 rounded-full border-2 flex items-center justify-center ${
+                                selectedIndex === optIdx
+                                  ? "border-primary bg-primary"
+                                  : "border-border"
+                              }`}
+                            >
+                              {selectedIndex === optIdx && (
+                                <div className="h-2 w-2 bg-white rounded-full" />
+                              )}
+                            </div>
+                            <div className="flex-1">
+                              <div className="font-medium mb-1">{option.text}</div>
+                              <div className="text-sm text-muted-foreground">
+                                {option.description}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        ))}
+
+      {/* Actions */}
+      <Card className="border-2 border-primary/20">
+        <CardContent className="pt-6">
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Button size="lg" onClick={() => router.push("/")}>
+              <MapPin className="h-4 w-4 mr-2" />
+              Yeni Plan Oluştur
+            </Button>
+            <Button
+              size="lg"
+              variant="outline"
+              onClick={() => {
+                console.log("Selected plan:", {
+                  plan,
+                  selections: selectedOptions,
+                });
+                alert("Plan seçimleriniz konsola yazdırıldı!");
+              }}
+            >
+              <Sparkles className="h-4 w-4 mr-2" />
+              Planı Kaydet
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -515,12 +280,12 @@ export default function FullPlan() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-2xl">Full Trip Plan</CardTitle>
-              <CardDescription>Loading...</CardDescription>
+              <CardTitle>Full Trip Plan</CardTitle>
+              <CardDescription>Yükleniyor...</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="flex items-center justify-center py-12">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                <Loader2 className="h-12 w-12 animate-spin text-primary" />
               </div>
             </CardContent>
           </Card>
