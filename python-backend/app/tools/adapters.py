@@ -26,79 +26,15 @@ async def get_mcp_tools_schema() -> List[Dict[str, Any]]:
     logger.info("Fetching available tools from MCP server...")
     mcp_tools = await fetch_mcp_tools_from_server()
     
-    if mcp_tools:
-        # Convert MCP tools to Anthropic format
-        anthropic_tools = [convert_mcp_tool_to_anthropic(tool) for tool in mcp_tools]
-        _cached_mcp_tools = anthropic_tools
-        logger.info(f"Successfully loaded {len(anthropic_tools)} tools from MCP server: {[t['name'] for t in anthropic_tools]}")
-        return anthropic_tools
+    if not mcp_tools:
+        logger.error("Failed to fetch tools from MCP server. Cannot proceed without MCP tools.")
+        raise RuntimeError("MCP server connection failed. Please ensure MCP server is running.")
     
-    # Fallback to hardcoded tools if server fetch fails
-    logger.warning("Failed to fetch tools from MCP server, using hardcoded fallback")
-    fallback_tools = [
-        {
-            "name": "flight_search",
-            "description": "Search for flights between two cities with departure and optional return dates. Returns flight options with pricing, segments, airline details, and booking info. Use this to find the best flight options for travelers.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "origin": {"type": "string", "description": "Origin city or IATA code (e.g., Istanbul, IST)"},
-                    "destination": {"type": "string", "description": "Destination city or IATA code (e.g., New York, NYC)"},
-                    "departure_date": {"type": "string", "description": "Departure date in DD.MM.YYYY format"},
-                    "return_date": {"type": "string", "description": "Return date in DD.MM.YYYY format (optional for one-way)"},
-                    "adults": {"type": "integer", "description": "Number of adult passengers", "default": 1},
-                    "direct_flight": {"type": "boolean", "description": "Only return direct flights", "default": False},
-                },
-                "required": ["origin", "destination", "departure_date", "adults"],
-            },
-        },
-        {
-            "name": "hotel_search",
-            "description": "Search for hotels in a destination city with check-in and check-out dates. Returns hotel options with pricing, ratings, amenities, and location. Use this to find suitable accommodation based on budget and preferences.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "destination_name": {"type": "string", "description": "City or hotel destination name"},
-                    "check_in_date": {"type": "string", "description": "Check-in date in DD.MM.YYYY format"},
-                    "check_out_date": {"type": "string", "description": "Check-out date in DD.MM.YYYY format"},
-                    "adults": {"type": "integer", "description": "Number of adults", "default": 1},
-                    "children": {"type": "array", "description": "Array of child ages", "items": {"type": "integer"}, "default": []},
-                    "rooms": {"type": "integer", "description": "Number of rooms", "default": 1},
-                },
-                "required": ["destination_name", "check_in_date", "check_out_date"],
-            },
-        },
-        {
-            "name": "flight_weather_forecast",
-            "description": "Get weather forecast for a location and date range. Returns daily temperature, precipitation chance, and conditions. Use this to plan activities and recommend appropriate clothing/gear. Essential for outdoor activity planning.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "location": {"type": "string", "description": "City name or IATA code"},
-                    "start_date": {"type": "string", "description": "Start date in YYYY-MM-DD format"},
-                    "end_date": {"type": "string", "description": "End date in YYYY-MM-DD format (optional)"},
-                },
-                "required": ["location", "start_date"],
-            },
-        },
-        {
-            "name": "bus_search",
-            "description": "Search for intercity bus routes between two cities on a given date. Returns bus schedules, pricing, and operators. Use this for budget-friendly intercity transport or when flights are not available/suitable.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "origin": {"type": "string", "description": "Origin city name"},
-                    "destination": {"type": "string", "description": "Destination city name"},
-                    "departure_date": {"type": "string", "description": "Departure date in DD.MM.YYYY format"},
-                    "adults": {"type": "integer", "description": "Number of adults", "default": 1},
-                    "children": {"type": "integer", "description": "Number of children", "default": 0},
-                },
-                "required": ["origin", "destination", "departure_date"],
-            },
-        },
-    ]
-    _cached_mcp_tools = fallback_tools
-    return fallback_tools
+    # Convert MCP tools to Anthropic format
+    anthropic_tools = [convert_mcp_tool_to_anthropic(tool) for tool in mcp_tools]
+    _cached_mcp_tools = anthropic_tools
+    logger.info(f"Successfully loaded {len(anthropic_tools)} tools from MCP server: {[t['name'] for t in anthropic_tools]}")
+    return anthropic_tools
 
 
 def _diag(tool: str, start: float, ok: bool, error: str | None = None) -> Dict[str, Any]:
@@ -275,3 +211,20 @@ async def geo_resolve_city(query: str) -> ToolResult:
         return {}, _diag("geo.resolveCity", t0, True)
     except Exception as e:
         return {}, _diag("geo.resolveCity", t0, False, str(e))
+
+
+async def bus_search(params: Dict[str, Any]) -> ToolResult:
+    """Search for intercity bus routes between cities."""
+    t0 = time.time()
+    try:
+        args = {
+            "origin": params.get("origin") or params.get("originCity") or "",
+            "destination": params.get("destination") or params.get("destinationCity") or "",
+            "departure_date": _to_ddmmyyyy(params.get("departDateISO") or params.get("dateISO", "")),
+            "adults": params.get("adults", 1),
+            "children": params.get("children") or [],
+        }
+        data = await _mcp_call("bus_search", args)
+        return data, _diag("bus.search", t0, True)
+    except Exception as e:
+        return {}, _diag("bus.search", t0, False, str(e))

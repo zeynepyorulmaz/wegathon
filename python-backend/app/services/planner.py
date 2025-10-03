@@ -7,15 +7,6 @@ from app.services import anthropic_client
 from app.tools import adapters
 from app.tools.adapters import get_mcp_tools_schema
 
-SYSTEM = (
-    "You are Trip Planner AI. Always return ONLY the strict JSON object specified. "
-    "No markdown. Keys must match the contract."
-)
-
-CONTRACT_HINT = (
-    "JSON keys required: query, summary, flights, lodging, transport, weather, days, pricing, metadata."
-)
-
 
 def _json_only_guard(text: str) -> Dict[str, Any]:
     try:
@@ -88,7 +79,24 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
                 segs_in = [seg]
         segs = [ensure_segment_fields(s if isinstance(s, dict) else {}) for s in segs_in]
         provider = val.get("provider") or val.get("airline") or "unknown"
-        return {"provider": provider, "currency": val.get("currency"), "price": val.get("price"), "segments": segs, "bookingUrl": val.get("bookingUrl")}
+        
+        # Normalize price - handle "7,880 TL" or similar formats
+        price = val.get("price")
+        if isinstance(price, str):
+            # Remove currency symbols, commas, and extract just the number
+            import re
+            cleaned = re.sub(r'[^\d.]', '', price)
+            try:
+                price = float(cleaned) if cleaned else None
+            except (ValueError, TypeError):
+                price = None
+        elif price is not None:
+            try:
+                price = float(price)
+            except (ValueError, TypeError):
+                price = None
+        
+        return {"provider": provider, "currency": val.get("currency"), "price": price, "segments": segs, "bookingUrl": val.get("bookingUrl")}
 
     flights_norm = {
         "outbound": coerce_flight(flights.get("outbound") or flights.get("go") or flights.get("flight")),
@@ -103,15 +111,50 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
     def coerce_hotel(val):
         if not isinstance(val, dict):
             return None
+        
+        # Normalize rating - handle "9.4/10" or string format
+        rating = val.get("rating")
+        if isinstance(rating, str):
+            if "/" in rating:
+                try:
+                    rating = float(rating.split("/")[0])
+                except (ValueError, TypeError):
+                    rating = None
+            else:
+                try:
+                    rating = float(rating)
+                except (ValueError, TypeError):
+                    rating = None
+        elif rating is not None:
+            try:
+                rating = float(rating)
+            except (ValueError, TypeError):
+                rating = None
+        
+        # Normalize priceTotal - handle "62,286 TRY" or similar formats
+        price = val.get("priceTotal") or val.get("price")
+        if isinstance(price, str):
+            import re
+            cleaned = re.sub(r'[^\d.]', '', price)
+            try:
+                price = float(cleaned) if cleaned else None
+            except (ValueError, TypeError):
+                price = None
+        elif price is not None:
+            try:
+                price = float(price)
+            except (ValueError, TypeError):
+                price = None
+        
         return {
             "provider": val.get("provider") or "unknown",
             "name": val.get("name") or val.get("hotel") or "",
             "address": val.get("address"),
             "checkInISO": val.get("checkInISO") or val.get("checkIn") or "",
             "checkOutISO": val.get("checkOutISO") or val.get("checkOut") or "",
-            "priceTotal": val.get("priceTotal") or val.get("price"),
+            "priceTotal": price,
             "currency": val.get("currency"),
-            "rating": val.get("rating"),
+            "rating": rating,
             "amenities": val.get("amenities"),
             "neighborhood": val.get("neighborhood"),
             "bookingUrl": val.get("bookingUrl"),
@@ -152,7 +195,48 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
     def coerce_block(b):
         if not isinstance(b, dict):
             return {"label": "transit", "items": []}
+        
+        # Normalize label - handle Turkish, time strings, or invalid values
         label = b.get("label") or b.get("time") or "morning"
+        
+        label_map = {
+            "sabah": "morning",
+            "öğleden sonra": "afternoon",
+            "öğle": "afternoon",
+            "akşam": "evening",
+            "gece": "late-night",
+            "check-in": "check-in",
+            "check-out": "check-out",
+            "transit": "transit",
+            "ulaşım": "transit",
+            "varış": "transit",
+            "dönüş": "transit",
+        }
+        
+        if isinstance(label, str):
+            label_lower = label.lower().strip()
+            
+            # Check mapping
+            if label_lower in label_map:
+                label = label_map[label_lower]
+            # Check if it's a time (HH:MM format)
+            elif ":" in label and len(label) <= 5:
+                try:
+                    hour = int(label.split(":")[0])
+                    if hour < 6:
+                        label = "late-night"
+                    elif hour < 12:
+                        label = "morning"
+                    elif hour < 18:
+                        label = "afternoon"
+                    else:
+                        label = "evening"
+                except:
+                    label = "morning"
+            # If not in valid labels, default to morning
+            elif label_lower not in ["morning", "afternoon", "evening", "late-night", "transit", "check-in", "check-out"]:
+                label = "morning"
+        
         items = _as_list(b.get("items"))
         return {"label": label, "items": items, "notes": b.get("notes")}
 
@@ -168,19 +252,57 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
     pricing_src = obj.get("pricing") or {}
     if not isinstance(pricing_src, dict):
         pricing_src = {}
+    
+    # Helper to extract amount from nested objects or strings
+    def extract_amount(val):
+        if isinstance(val, dict):
+            return val.get("total") or val.get("amount") or val.get("price")
+        elif isinstance(val, str):
+            # Handle "2349 TL" or "1,234.56 EUR" formats
+            import re
+            cleaned = re.sub(r'[^\d.]', '', val)
+            try:
+                return float(cleaned) if cleaned else None
+            except (ValueError, TypeError):
+                return None
+        return val
+    
     breakdown = pricing_src.get("breakdown")
     if not isinstance(breakdown, dict):
         breakdown = {
-            "flights": pricing_src.get("flights") or pricing_src.get("flights_try"),
-            "lodging": pricing_src.get("lodging") or pricing_src.get("lodging_try"),
-            "activities": pricing_src.get("activities") or pricing_src.get("activities_try"),
-            "transport": pricing_src.get("transport") or pricing_src.get("transport_try"),
-            "feesAndTaxes": pricing_src.get("feesAndTaxes") or pricing_src.get("fees_try"),
+            "flights": extract_amount(pricing_src.get("flights") or pricing_src.get("flights_try")),
+            "lodging": extract_amount(pricing_src.get("lodging") or pricing_src.get("lodging_try")),
+            "activities": extract_amount(pricing_src.get("activities") or pricing_src.get("activities_try")),
+            "transport": extract_amount(pricing_src.get("transport") or pricing_src.get("transport_try")),
+            "feesAndTaxes": extract_amount(pricing_src.get("feesAndTaxes") or pricing_src.get("fees_try")),
         }
+    else:
+        # Already have breakdown, just normalize amounts
+        breakdown = {
+            "flights": extract_amount(breakdown.get("flights")),
+            "lodging": extract_amount(breakdown.get("lodging")),
+            "activities": extract_amount(breakdown.get("activities")),
+            "transport": extract_amount(breakdown.get("transport")),
+            "feesAndTaxes": extract_amount(breakdown.get("feesAndTaxes")),
+        }
+    # Normalize totalEstimated - handle if Claude returns nested object or string
+    total_estimated = pricing_src.get("totalEstimated") or pricing_src.get("total")
+    if isinstance(total_estimated, dict):
+        # If it's a nested object like {"amount": 123, "currency": "USD"}, extract amount
+        total_estimated = total_estimated.get("amount")
+    elif isinstance(total_estimated, str):
+        # Handle "50000 TRY" or "1,234.56" formats
+        import re
+        cleaned = re.sub(r'[^\d.]', '', total_estimated)
+        try:
+            total_estimated = float(cleaned) if cleaned else None
+        except (ValueError, TypeError):
+            total_estimated = None
+    
     pricing_norm = {
         "currency": pricing_src.get("currency") or obj.get("currency") or "USD",
         "breakdown": breakdown,
-        "totalEstimated": pricing_src.get("totalEstimated") or pricing_src.get("total") or None,
+        "totalEstimated": total_estimated,
         "confidence": pricing_src.get("confidence") or "low",
         "notes": _as_list(pricing_src.get("notes")) or None,
     }
@@ -229,6 +351,16 @@ def _parse_dt(date_str: str | None, time_str: str | None) -> str:
 
 def _map_mcp_flights(data: Dict[str, Any]) -> Dict[str, Any] | None:
     try:
+        # Handle MCP content array format
+        if "content" in data and isinstance(data["content"], list):
+            for item in data["content"]:
+                if item.get("type") == "text":
+                    import json as json_lib
+                    try:
+                        data = json_lib.loads(item.get("text", "{}"))
+                    except:
+                        pass
+        
         # Support both direct and wrapped under "data"
         root = data.get("data") if isinstance(data, dict) and "data" in data else data
         flights = root.get("flights") if isinstance(root, dict) else None
@@ -271,10 +403,43 @@ def _map_mcp_flights(data: Dict[str, Any]) -> Dict[str, Any] | None:
 
 def _map_mcp_hotels(data: Dict[str, Any]) -> Dict[str, Any] | None:
     try:
-        options = data.get("options") or data.get("results") or []
+        # Handle MCP content array format
+        if "content" in data and isinstance(data["content"], list):
+            for item in data["content"]:
+                if item.get("type") == "text":
+                    import json as json_lib
+                    try:
+                        data = json_lib.loads(item.get("text", "{}"))
+                    except:
+                        pass
+        
+        options = data.get("options") or data.get("results") or data.get("hotels") or []
         if not options:
             return None
         first = options[0]
+        
+        # Normalize rating - handle "9.4/10" or string format
+        rating = first.get("rating")
+        logger.info(f"_map_mcp_hotels: Raw rating value: {rating} (type: {type(rating)})")
+        if isinstance(rating, str):
+            if "/" in rating:
+                rating = float(rating.split("/")[0])
+                logger.info(f"_map_mcp_hotels: Parsed rating from '/' format: {rating}")
+            else:
+                try:
+                    rating = float(rating)
+                    logger.info(f"_map_mcp_hotels: Parsed rating from string: {rating}")
+                except (ValueError, TypeError):
+                    rating = None
+                    logger.warning("_map_mcp_hotels: Could not parse rating string")
+        elif rating is not None:
+            try:
+                rating = float(rating)
+                logger.info(f"_map_mcp_hotels: Converted rating to float: {rating}")
+            except (ValueError, TypeError):
+                rating = None
+                logger.warning("_map_mcp_hotels: Could not convert rating to float")
+        
         return {
             "selected": {
                 "provider": first.get("provider") or "mcp",
@@ -284,7 +449,7 @@ def _map_mcp_hotels(data: Dict[str, Any]) -> Dict[str, Any] | None:
                 "checkOutISO": first.get("checkOutISO") or "",
                 "priceTotal": first.get("priceTotal") or first.get("price"),
                 "currency": first.get("currency"),
-                "rating": first.get("rating"),
+                "rating": rating,
                 "amenities": first.get("amenities"),
                 "neighborhood": first.get("neighborhood"),
                 "bookingUrl": first.get("bookingUrl"),
@@ -313,51 +478,152 @@ def _map_mcp_weather(data: Dict[str, Any], start: str, end: str) -> List[Dict[st
     return out
 
 
-async def _enrich_with_mcp(plan: Dict[str, Any]) -> Dict[str, Any]:
-    parsed = plan.get("query", {}).get("parsed", {})
-    origin = parsed.get("originIata") or parsed.get("originCity") or ""
-    dest = parsed.get("destinationIata") or parsed.get("destinationCity") or ""
-    depart = parsed.get("startDateISO") or ""
-    ret = parsed.get("endDateISO") or ""
+def _map_mcp_bus(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Map MCP bus search response to transport intercity format."""
+    out: List[Dict[str, Any]] = []
+    try:
+        # Handle MCP content array format
+        if "content" in data and isinstance(data["content"], list):
+            for item in data["content"]:
+                if item.get("type") == "text":
+                    import json as json_lib
+                    try:
+                        data = json_lib.loads(item.get("text", "{}"))
+                    except:
+                        pass
+        
+        # Extract bus options
+        buses = data.get("buses") or data.get("options") or data.get("results") or []
+        
+        for bus in buses[:5]:  # Limit to top 5 options
+            out.append({
+                "mode": "bus",
+                "operator": bus.get("operator") or bus.get("company") or "Unknown",
+                "departureTime": bus.get("departure_time") or bus.get("departureTime"),
+                "arrivalTime": bus.get("arrival_time") or bus.get("arrivalTime"),
+                "duration": bus.get("duration") or bus.get("duration_minutes"),
+                "price": bus.get("price"),
+                "currency": bus.get("currency"),
+                "bookingUrl": bus.get("booking_url") or bus.get("bookingUrl"),
+            })
+    except Exception as e:
+        logger.error(f"_map_mcp_bus: Error mapping bus data: {e}")
+    
+    return out
+
+
+async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None) -> Dict[str, Any]:
+    """
+    Enrich plan with real MCP data.
+    Can use parsed_input (from prompt_parser) for more accurate queries.
+    """
+    # Prefer parsed_input if available
+    if parsed_input:
+        origin = parsed_input.departure.city
+        dest = parsed_input.destination.city
+        depart = parsed_input.dates.start_date or ""
+        ret = parsed_input.dates.end_date or ""
+        adults = parsed_input.travelers.count or 1
+        logger.info(f"_enrich_with_mcp: Using parsed input - {origin} → {dest}, {depart} to {ret}, {adults} adults")
+        
+        # Update plan's parsed section with our better parsing
+        # Calculate nights
+        nights = parsed_input.dates.duration or 4
+        if depart and ret:
+            try:
+                from datetime import datetime
+                start_dt = datetime.strptime(depart, "%Y-%m-%d")
+                end_dt = datetime.strptime(ret, "%Y-%m-%d")
+                nights = (end_dt - start_dt).days
+            except Exception:
+                pass
+        
+        plan.setdefault("query", {})
+        plan["query"]["parsed"] = {
+            "originCity": origin,
+            "originIata": origin,  # Will be resolved by MCP
+            "destinationCity": dest,
+            "destinationIata": dest,  # Will be resolved by MCP
+            "startDateISO": depart,
+            "endDateISO": ret,
+            "nights": nights,
+            "adults": adults,
+            "children": len(parsed_input.travelers.children) if parsed_input.travelers.children else 0,
+            "composition": parsed_input.travelers.composition,
+            "budget_amount": parsed_input.budget.amount,
+            "budget_currency": parsed_input.budget.currency,
+            "travel_style": parsed_input.travel_style.type,
+            "preferences": parsed_input.preferences,
+        }
+    else:
+        # Fallback to plan's parsed data
+        parsed = plan.get("query", {}).get("parsed", {})
+        origin = parsed.get("originIata") or parsed.get("originCity") or ""
+        dest = parsed.get("destinationIata") or parsed.get("destinationCity") or ""
+        depart = parsed.get("startDateISO") or ""
+        ret = parsed.get("endDateISO") or ""
+        adults = parsed.get("adults") or 1
+        logger.info(f"_enrich_with_mcp: Using plan data - origin={origin}, dest={dest}, depart={depart}, ret={ret}")
 
     diagnostics: List[Dict[str, Any]] = []
 
-    # Flights
+    # Flights - call REAL MCP
     try:
+        logger.info("_enrich_with_mcp: Calling MCP flight_search...")
         flights_data, flights_diag = await adapters.flights_search({
             "origin": origin,
             "destination": dest,
             "departDateISO": depart,
             "returnDateISO": ret,
-            "adults": parsed.get("adults") or 1,
+            "adults": adults,
         })
+        logger.info(f"_enrich_with_mcp: flight_search returned {len(str(flights_data))} bytes")
+        logger.info(f"_enrich_with_mcp: flight_search data structure: {list(flights_data.keys()) if isinstance(flights_data, dict) else type(flights_data)}")
+        if isinstance(flights_data, dict) and flights_data:
+            # Log first few keys to understand structure
+            sample_keys = list(flights_data.keys())[:10]
+            logger.info(f"_enrich_with_mcp: flight_search top-level keys: {sample_keys}")
         diagnostics.append(flights_diag)
         mapped = _map_mcp_flights(flights_data) or plan.get("flights")
         if mapped:
+            logger.info(f"_enrich_with_mcp: Mapped flights: {mapped.get('outbound', {}).get('provider', 'N/A')}")
             plan["flights"] = mapped
+        else:
+            logger.warning("_enrich_with_mcp: No flights mapped")
     except Exception as e:
+        logger.error(f"_enrich_with_mcp: flight_search error: {e}")
         diagnostics.append({"tool":"flights.search","ok":False,"error":str(e)})
 
-    # Hotels (left as-is; requires real shape)
+    # Hotels - call REAL MCP
     try:
+        logger.info("_enrich_with_mcp: Calling MCP hotel_search...")
         hotels_data, hotels_diag = await adapters.hotels_search({
-            "city": dest or parsed.get("destinationCity") or "",
+            "city": dest,
             "checkInISO": depart,
             "checkOutISO": ret,
             "rooms": 1,
-            "occupants": parsed.get("adults") or 1,
+            "occupants": adults,
         })
+        logger.info(f"_enrich_with_mcp: hotel_search returned {len(str(hotels_data))} bytes")
+        logger.info(f"_enrich_with_mcp: hotel_search data structure: {list(hotels_data.keys()) if isinstance(hotels_data, dict) else type(hotels_data)}")
+        if isinstance(hotels_data, dict) and hotels_data:
+            sample_keys = list(hotels_data.keys())[:10]
+            logger.info(f"_enrich_with_mcp: hotel_search top-level keys: {sample_keys}")
         diagnostics.append(hotels_diag)
         mapped_h = _map_mcp_hotels(hotels_data) or plan.get("lodging")
         if mapped_h:
+            logger.info(f"_enrich_with_mcp: Mapped hotel: {mapped_h.get('selected', {}).get('name', 'N/A')}")
             plan["lodging"] = mapped_h
+        else:
+            logger.warning("_enrich_with_mcp: No hotels mapped")
     except Exception as e:
+        logger.error(f"_enrich_with_mcp: hotel_search error: {e}")
         diagnostics.append({"tool":"hotels.search","ok":False,"error":str(e)})
 
     # Weather
     try:
         weather_data, weather_diag = await adapters.weather_forecast({
-            "city": dest or parsed.get("destinationCity") or "",
+            "city": dest,
             "startDateISO": depart,
             "endDateISO": ret,
         })
@@ -367,6 +633,30 @@ async def _enrich_with_mcp(plan: Dict[str, Any]) -> Dict[str, Any]:
             plan["weather"] = mapped_w
     except Exception as e:
         diagnostics.append({"tool":"weather.forecast","ok":False,"error":str(e)})
+    
+    # Bus Search (for intercity transport options)
+    try:
+        logger.info("_enrich_with_mcp: Calling MCP bus_search for transport options...")
+        bus_data, bus_diag = await adapters.bus_search({
+            "origin": origin,
+            "destination": dest,
+            "departDateISO": depart,
+            "adults": adults,
+        })
+        logger.info(f"_enrich_with_mcp: bus_search returned {len(str(bus_data))} bytes")
+        diagnostics.append(bus_diag)
+        
+        # Map bus data to transport section
+        mapped_bus = _map_mcp_bus(bus_data)
+        if mapped_bus:
+            logger.info(f"_enrich_with_mcp: Mapped {len(mapped_bus)} bus options")
+            plan.setdefault("transport", {})
+            plan["transport"]["intercity"] = mapped_bus
+        else:
+            logger.warning("_enrich_with_mcp: No bus options mapped")
+    except Exception as e:
+        logger.error(f"_enrich_with_mcp: bus_search error: {e}")
+        diagnostics.append({"tool":"bus.search","ok":False,"error":str(e)})
 
     plan.setdefault("metadata", {})
     md = plan["metadata"]
@@ -377,7 +667,22 @@ async def _enrich_with_mcp(plan: Dict[str, Any]) -> Dict[str, Any]:
 async def generate(req: PlanRequest) -> TripPlan:
     """
     Uses Anthropic with tool use to generate a TripPlan, calling MCP tools as needed.
+    
+    WORKFLOW:
+    1. Parse natural language prompt into structured data
+    2. Use parsed data to make targeted MCP calls (flights, hotels, weather)
+    3. Generate comprehensive plan with Claude using real MCP data
     """
+    # Step 1: Parse the prompt for better understanding
+    logger.info(f"generate: Parsing prompt: {req.prompt[:100]}...")
+    try:
+        from app.services.prompt_parser import parse_prompt
+        parsed_input = await parse_prompt(req.prompt, locale="tr-TR")
+        logger.info(f"generate: Parsed - {parsed_input.destination.city}, {parsed_input.dates.start_date}, {parsed_input.travelers.count} travelers")
+    except Exception as e:
+        logger.warning(f"generate: Prompt parsing failed: {e}. Continuing with basic flow...")
+        parsed_input = None
+    
     system = (
         "You are an Expert Travel Planner AI with deep knowledge of global destinations, travel logistics, and cultural insights. "
         "Your goal is to create COMPREHENSIVE, REALISTIC, and DELIGHTFUL travel plans that consider ALL aspects of the journey.\n\n"
@@ -394,12 +699,14 @@ async def generate(req: PlanRequest) -> TripPlan:
         "5. **Weather-Responsive**: Adapt activities and recommendations based on forecasted weather\n"
         "6. **Culturally Informed**: Include local customs, etiquette, best times to visit attractions, local food recommendations\n\n"
         
-        "## TOOL USAGE STRATEGY:\n"
-        "1. **Always search flights first** to understand actual arrival/departure times\n"
-        "2. **Search hotels** based on flight times and traveler preferences (location, amenities, budget)\n"
-        "3. **Check weather forecast** to inform activity planning and packing recommendations\n"
-        "4. **Search intercity transport** if the itinerary involves multiple cities\n"
-        "5. Use tool results to create a realistic, optimized itinerary\n\n"
+        "## TOOL USAGE STRATEGY (MANDATORY):\n"
+        "**YOU MUST USE THE AVAILABLE TOOLS** to get real flight, hotel, and weather data. Do NOT make up prices or availability.\n\n"
+        "1. **ALWAYS call flight_search** with origin, destination, departure_date, return_date, adults\n"
+        "2. **ALWAYS call hotel_search** with destination_name, check_in_date, check_out_date, adults\n"
+        "3. **ALWAYS call flight_weather_forecast** (or appropriate weather tool) with location, start_date, end_date\n"
+        "4. **Use the REAL DATA from tool results** to create your plan\n"
+        "5. If a tool fails, note it in warnings but continue with estimated data\n\n"
+        "**IMPORTANT: You have access to real-time MCP tools. USE THEM FIRST before generating the final JSON plan.**\n\n"
         
         "## DAY-BY-DAY PLANNING RULES:\n"
         "- **Day 1**: Arrival day - factor in actual flight landing time, immigration/baggage (add 1-2h buffer), hotel check-in, light activities if energy permits\n"
@@ -435,15 +742,38 @@ async def generate(req: PlanRequest) -> TripPlan:
         f"Create a comprehensive travel plan for: {req.prompt}\n\n"
         f"Language for responses: {req.language or 'en'}\n"
         f"Currency for pricing: {req.currency or 'TRY'}\n\n"
-        "**IMPORTANT: If dates are not specified in the prompt, assume a trip starting 7-14 days from today. "
-        "If duration is not specified, assume 3-5 days. "
-        "Make reasonable assumptions to create a complete plan.**\n\n"
-        "Steps:\n"
-        "1. Parse the prompt and extract/assume: origin, destination, dates, duration, travelers\n"
-        "2. Try using flight_search, hotel_search, and weather tools (but if they fail, continue with estimated data)\n"
-        "3. Create a detailed day-by-day itinerary considering all factors\n"
-        "4. Return a COMPLETE TripPlan JSON object with ALL required fields filled\n\n"
-        "**You MUST return JSON, not conversational text. Start your response with { and end with }**"
+        "**WORKFLOW EXAMPLE:**\n"
+        "For a request like 'Istanbul to Paris, Nov 15-20, 2 adults', you should:\n\n"
+        "Step 1: Parse and identify:\n"
+        "- origin: Istanbul (IST)\n"
+        "- destination: Paris (CDG/ORY)\n"
+        "- departure_date: 15.11.2025\n"
+        "- return_date: 20.11.2025\n"
+        "- adults: 2\n\n"
+        "Step 2: **USE TOOLS** (MANDATORY):\n"
+        "```\n"
+        "flight_search({\n"
+        "  origin: 'Istanbul',\n"
+        "  destination: 'Paris',\n"
+        "  departure_date: '15.11.2025',\n"
+        "  return_date: '20.11.2025',\n"
+        "  adults: 2\n"
+        "})\n\n"
+        "hotel_search({\n"
+        "  destination_name: 'Paris',\n"
+        "  check_in_date: '15.11.2025',\n"
+        "  check_out_date: '20.11.2025',\n"
+        "  adults: 2,\n"
+        "  rooms: 1\n"
+        "})\n\n"
+        "flight_weather_forecast({\n"
+        "  location: 'Paris',\n"
+        "  start_date: '2025-11-15',\n"
+        "  end_date: '2025-11-20'\n"
+        "})\n"
+        "```\n\n"
+        "Step 3: Wait for tool results, then use the REAL data in your final JSON plan.\n\n"
+        "**NOW PROCESS THE ACTUAL REQUEST ABOVE. CALL THE TOOLS FIRST, THEN RETURN THE COMPLETE TRIPPLAN JSON.**"
     )
     
     messages = [{"role": "user", "content": user_msg}]
@@ -476,6 +806,13 @@ async def generate(req: PlanRequest) -> TripPlan:
                     try:
                         obj = _json_only_guard(raw)
                         obj = normalize_to_contract(obj)
+                        
+                        # Check if tools were actually used
+                        tool_diags = obj.get("metadata", {}).get("toolDiagnostics", [])
+                        if not tool_diags or len(tool_diags) == 0:
+                            logger.warning("generate: Claude did not use tools, applying manual MCP enrichment")
+                            obj = await _enrich_with_mcp(obj, parsed_input)
+                        
                         return TripPlan.model_validate(obj)
                     except Exception as e:
                         logger.error(f"generate: Error parsing/validating response: {e}")
@@ -524,9 +861,18 @@ async def generate(req: PlanRequest) -> TripPlan:
         # Unknown stop reason
         break
     
-    # Fallback if loop exhausted
+    # Fallback if loop exhausted without generating a valid plan
+    logger.warning("generate: Loop exhausted without valid plan, creating fallback")
     obj = {"query": {"raw": req.prompt, "parsed": {}}, "summary": "Unable to generate plan", "flights": {}, "lodging": {}, "transport": {}, "weather": [], "days": [], "pricing": {}, "metadata": {}}
     obj = normalize_to_contract(obj)
+    
+    # Last resort: Try manual MCP enrichment
+    logger.info("generate: Attempting manual MCP enrichment as fallback")
+    try:
+        obj = await _enrich_with_mcp(obj, parsed_input)
+    except Exception as e:
+        logger.error(f"generate: Manual MCP enrichment failed: {e}")
+    
     return TripPlan.model_validate(obj)
 
 

@@ -1,19 +1,16 @@
 from fastapi import APIRouter, HTTPException
 from typing import Dict, List, Any
 from app.models.plan import PlanRequest, ReviseRequest, TripPlan
-from app.models.conversation import ConversationState, QuestionResponse, UserAnswer
+from app.models.parser_schemas import ParsePromptRequest, ParsedTripPrompt
 from app.services.planner import generate, revise
-from app.services.ask import ask_questions
-from app.services.trip_parser import parse_trip_prompt, validate_and_complete_trip_data, format_trip_prompt
 from app.services.conversational_planner import chat_to_collect_trip_info, create_plan_from_conversation
+from app.services.prompt_parser import parse_prompt
 from app.tools.adapters import get_mcp_tools_schema
 import uuid
 
 router = APIRouter(prefix="/api", tags=["planner"])
 
-# Simple in-memory storage for conversation states (use Redis/DB in production)
-conversation_store: Dict[str, ConversationState] = {}
-# Storage for AI-driven conversations
+# In-memory storage for AI-driven conversations (use Redis/DB in production)
 ai_conversations: Dict[str, List[Dict[str, str]]] = {}
 
 
@@ -31,15 +28,6 @@ async def revise_endpoint(payload: Dict):
         plan = payload.get("plan")
         req = ReviseRequest(planId=payload.get("planId", ""), instruction=payload["instruction"])  # type: ignore
         return await revise(plan, req)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/ask_questions")
-async def ask_endpoint(history: List[Dict]):
-    try:
-        content = await ask_questions(history)
-        return {"content": content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -195,154 +183,24 @@ async def create_plan_from_chat(data: Dict[str, Any]) -> TripPlan:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/plan/validate")
-async def validate_trip_prompt(req: PlanRequest) -> Dict[str, Any]:
+@router.post("/parse", response_model=ParsedTripPrompt, summary="Parse natural language travel prompt")
+async def parse_endpoint(req: ParsePromptRequest):
     """
-    Validate trip prompt and ask for missing required information.
-    If all information is present, returns ready_to_plan=True.
-    Otherwise, returns the first missing field as a question.
-    """
-    try:
-        # Parse the prompt to extract known information
-        extracted_data, missing_fields = parse_trip_prompt(req.prompt, req.language or "en")
-        
-        # If all required fields are present, ready to plan
-        if not missing_fields:
-            # Validate and complete the data
-            complete_data = validate_and_complete_trip_data(extracted_data)
-            
-            return {
-                "ready_to_plan": True,
-                "message": "All required information collected. Ready to create your travel plan!",
-                "collected_data": complete_data,
-                "session_id": None
-            }
-        
-        # Create a conversation session
-        session_id = str(uuid.uuid4())
-        conversation_state = ConversationState(
-            session_id=session_id,
-            original_prompt=req.prompt,
-            collected_data=extracted_data,
-            remaining_fields=missing_fields,
-            current_question=missing_fields[0],
-            ready_to_plan=False
-        )
-        
-        # Store the state
-        conversation_store[session_id] = conversation_state
-        
-        # Return the first question
-        return {
-            "ready_to_plan": False,
-            "message": f"I need some more information to create your perfect travel plan.",
-            "question": missing_fields[0].dict(),
-            "session_id": session_id,
-            "collected_so_far": extracted_data,
-            "remaining_questions": len(missing_fields) - 1
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/plan/answer")
-async def answer_trip_question(answer_data: UserAnswer) -> Dict[str, Any]:
-    """
-    Submit an answer to a trip planning question.
-    Returns the next question or ready_to_plan=True when all info is collected.
+    Parse a natural language travel prompt into structured data.
+    
+    Example input: "Eşimle 15 Ekim Berlin'e 3-4 gün gidelim, bütçe sonra."
+    
+    Returns detailed structured data including:
+    - Departure and destination cities/countries
+    - Travel dates and duration
+    - Traveler composition and count
+    - Budget information
+    - Travel style and preferences
     """
     try:
-        session_id = answer_data.session_id
-        
-        # Retrieve conversation state
-        if session_id not in conversation_store:
-            raise HTTPException(status_code=404, detail="Session not found. Please start a new conversation.")
-        
-        state = conversation_store[session_id]
-        
-        # Store the answer
-        if state.current_question:
-            state.collected_data[state.current_question.field] = answer_data.answer
-            
-            # Remove the answered question from remaining
-            state.remaining_fields = state.remaining_fields[1:]
-        
-        # Check if we have more questions
-        if state.remaining_fields:
-            state.current_question = state.remaining_fields[0]
-            
-            # Update store
-            conversation_store[session_id] = state
-            
-            return {
-                "ready_to_plan": False,
-                "message": "Got it! One more question:",
-                "question": state.current_question.dict(),
-                "session_id": session_id,
-                "collected_so_far": state.collected_data,
-                "remaining_questions": len(state.remaining_fields) - 1
-            }
-        
-        # All questions answered!
-        state.ready_to_plan = True
-        state.current_question = None
-        
-        # Validate and complete the data
-        complete_data = validate_and_complete_trip_data(state.collected_data)
-        state.collected_data = complete_data
-        
-        # Update store
-        conversation_store[session_id] = state
-        
-        return {
-            "ready_to_plan": True,
-            "message": "Perfect! I have all the information I need. Ready to create your travel plan!",
-            "collected_data": complete_data,
-            "session_id": session_id,
-            "remaining_questions": 0
-        }
-        
+        parsed = await parse_prompt(req.input, req.locale or "tr-TR")
+        return parsed
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/plan/create")
-async def create_plan_from_session(data: Dict[str, Any]) -> TripPlan:
-    """
-    Create a travel plan from a completed conversation session.
-    """
-    try:
-        session_id = data.get("session_id")
-        
-        if not session_id or session_id not in conversation_store:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        state = conversation_store[session_id]
-        
-        if not state.ready_to_plan:
-            raise HTTPException(status_code=400, detail="Session not ready. Please answer all questions first.")
-        
-        # Format the collected data into a prompt
-        formatted_prompt = format_trip_prompt(state.collected_data, data.get("language", "en"))
-        
-        # Create plan request
-        req = PlanRequest(
-            prompt=formatted_prompt,
-            currency=data.get("currency", "TRY"),
-            language=data.get("language", "en")
-        )
-        
-        # Generate the plan
-        plan = await generate(req)
-        
-        # Clean up session (optional - you might want to keep for history)
-        # del conversation_store[session_id]
-        
-        return plan
-        
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
-
