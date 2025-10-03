@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 from app.models.plan import TripPlan, PlanRequest, ReviseRequest
 from app.core.logging import logger
 from app.services.openai_client import chat
+from app.tools import adapters
 
 SYSTEM = (
     "You are Trip Planner AI. Always return ONLY the strict JSON object specified. "
@@ -207,6 +208,146 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _map_mcp_flights(data: Dict[str, Any]) -> Dict[str, Any] | None:
+    try:
+        options = data.get("options") or data.get("results") or []
+        if not options:
+            return None
+        def map_option(opt: Dict[str, Any]) -> Dict[str, Any]:
+            segs = []
+            for s in _as_list(opt.get("segments")):
+                segs.append({
+                    "fromIata": s.get("fromIata") or s.get("from") or "",
+                    "toIata": s.get("toIata") or s.get("to") or "",
+                    "departISO": s.get("departISO") or s.get("depart") or "",
+                    "arriveISO": s.get("arriveISO") or s.get("arrive") or "",
+                    "airline": s.get("airline") or "",
+                    "flightNumber": s.get("flightNumber") or s.get("number") or "",
+                    "durationMinutes": int(s.get("durationMinutes") or s.get("duration") or 0),
+                    "cabin": s.get("cabin"),
+                })
+            return {
+                "provider": opt.get("provider") or "mcp",
+                "price": opt.get("price"),
+                "currency": opt.get("currency"),
+                "segments": segs or [{"fromIata":"","toIata":"","departISO":"","arriveISO":"","airline":"","flightNumber":"","durationMinutes":0,"cabin":None}],
+                "bookingUrl": opt.get("bookingUrl"),
+            }
+        first = map_option(options[0])
+        ret: Dict[str, Any] = {"outbound": first, "inbound": None, "alternatives": [map_option(o) for o in options[1:3]] or None}
+        return ret
+    except Exception:
+        return None
+
+
+def _map_mcp_hotels(data: Dict[str, Any]) -> Dict[str, Any] | None:
+    try:
+        options = data.get("options") or data.get("results") or []
+        if not options:
+            return None
+        first = options[0]
+        return {
+            "selected": {
+                "provider": first.get("provider") or "mcp",
+                "name": first.get("name") or "",
+                "address": first.get("address"),
+                "checkInISO": first.get("checkInISO") or "",
+                "checkOutISO": first.get("checkOutISO") or "",
+                "priceTotal": first.get("priceTotal") or first.get("price"),
+                "currency": first.get("currency"),
+                "rating": first.get("rating"),
+                "amenities": first.get("amenities"),
+                "neighborhood": first.get("neighborhood"),
+                "bookingUrl": first.get("bookingUrl"),
+            },
+            "alternatives": None,
+        }
+    except Exception:
+        return None
+
+
+def _map_mcp_weather(data: Dict[str, Any], start: str, end: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    try:
+        days = data.get("days") or data.get("forecast") or []
+        for d in days:
+            out.append({
+                "dateISO": d.get("dateISO") or d.get("date") or "",
+                "highC": d.get("highC") or d.get("high") or None,
+                "lowC": d.get("lowC") or d.get("low") or None,
+                "precipitationChance": d.get("precipitationChance") or d.get("precipChance") or None,
+                "source": d.get("source") or "MCP",
+                "isForecast": True,
+            })
+    except Exception:
+        pass
+    return out
+
+
+async def _enrich_with_mcp(plan: Dict[str, Any]) -> Dict[str, Any]:
+    parsed = plan.get("query", {}).get("parsed", {})
+    origin = parsed.get("originIata") or parsed.get("originCity") or ""
+    dest = parsed.get("destinationIata") or parsed.get("destinationCity") or ""
+    depart = parsed.get("startDateISO") or ""
+    ret = parsed.get("endDateISO") or ""
+
+    diagnostics: List[Dict[str, Any]] = []
+
+    # Flights
+    try:
+        flights_data, flights_diag = await adapters.flights_search({
+            "origin": origin,
+            "destination": dest,
+            "departDateISO": depart,
+            "returnDateISO": ret,
+            "adults": parsed.get("adults") or 1,
+            "cabin": "economy",
+            "maxResults": 5,
+        })
+        diagnostics.append(flights_diag)
+        mapped = _map_mcp_flights(flights_data) or plan.get("flights")
+        if mapped:
+            plan["flights"] = mapped
+    except Exception as e:
+        diagnostics.append({"tool":"flights.search","ok":False,"error":str(e)})
+
+    # Hotels
+    try:
+        hotels_data, hotels_diag = await adapters.hotels_search({
+            "city": dest or parsed.get("destinationCity") or "",
+            "checkInISO": depart,
+            "checkOutISO": ret,
+            "rooms": 1,
+            "occupants": parsed.get("adults") or 1,
+            "maxResults": 5,
+        })
+        diagnostics.append(hotels_diag)
+        mapped_h = _map_mcp_hotels(hotels_data) or plan.get("lodging")
+        if mapped_h:
+            plan["lodging"] = mapped_h
+    except Exception as e:
+        diagnostics.append({"tool":"hotels.search","ok":False,"error":str(e)})
+
+    # Weather
+    try:
+        weather_data, weather_diag = await adapters.weather_forecast({
+            "city": dest or parsed.get("destinationCity") or "",
+            "startDateISO": depart,
+            "endDateISO": ret,
+        })
+        diagnostics.append(weather_diag)
+        mapped_w = _map_mcp_weather(weather_data, depart, ret)
+        if mapped_w:
+            plan["weather"] = mapped_w
+    except Exception as e:
+        diagnostics.append({"tool":"weather.forecast","ok":False,"error":str(e)})
+
+    plan.setdefault("metadata", {})
+    md = plan["metadata"]
+    md["toolDiagnostics"] = _as_list(md.get("toolDiagnostics")) + diagnostics
+    return plan
+
+
 async def generate(req: PlanRequest) -> TripPlan:
     messages = [
         {"role": "system", "content": SYSTEM},
@@ -224,6 +365,7 @@ async def generate(req: PlanRequest) -> TripPlan:
     raw = await chat(messages)
     obj = _json_only_guard(raw)
     obj = normalize_to_contract(obj)
+    obj = await _enrich_with_mcp(obj)
     return TripPlan.model_validate(obj)
 
 
@@ -241,4 +383,5 @@ async def revise(plan_json: Dict[str, Any], req: ReviseRequest) -> TripPlan:
     raw = await chat(messages)
     obj = _json_only_guard(raw)
     obj = normalize_to_contract(obj)
+    obj = await _enrich_with_mcp(obj)
     return TripPlan.model_validate(obj)
