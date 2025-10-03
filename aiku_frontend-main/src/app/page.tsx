@@ -188,6 +188,9 @@ export default function Home() {
               router.push("/plan/templates");
             } else if (mode === "chat") {
               router.push("/plan/chat");
+            } else if (mode === "timeline") {
+              const params = new URLSearchParams({ prompt });
+              router.push(`/plan/timeline?${params.toString()}`);
             } else {
               const params = new URLSearchParams({ prompt });
               router.push(`/plan/${mode}?${params.toString()}`);

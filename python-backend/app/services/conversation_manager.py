@@ -2,15 +2,13 @@
 Conversation manager - handles conversational trip planning with AI.
 Collects missing information, creates plans, and handles revisions.
 """
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, timedelta
+from typing import Optional, Tuple
 import json
 
 from app.models.conversation import ConversationSession, ChatMessage
 from app.models.plan import TripPlan, PlanRequest, ReviseRequest
 from app.services import anthropic_client
 from app.services.planner import generate, revise
-from app.services.prompt_parser import parse_prompt
 from app.core.logging import logger
 
 
@@ -142,105 +140,8 @@ async def process_conversation_turn(
         needs_more_info = True
         
         if action == "create_plan":
-            # We have enough info - create the plan with bookings
+            # We have enough info - create the plan
             logger.info("Creating plan with collected data...")
-            
-            # Get bookings in parallel (flight + hotel)
-            from app.services.booking_service import get_bookings_parallel
-            
-            bookings = await get_bookings_parallel(
-                origin=session.collected_data.get("origin", "Istanbul"),
-                destination=session.collected_data.get("destination"),
-                start_date=session.collected_data.get("start_date"),
-                end_date=session.collected_data.get("end_date"),
-                adults=session.collected_data.get("adults", 2),
-                children=session.collected_data.get("children", 0)
-            )
-            
-            # Get activities with flight/hotel time constraints
-            from app.services.activity_service import plan_activities
-            
-            # Extract flight times safely
-            flight_arrival = None
-            flight_departure = None
-            
-            try:
-                if bookings and isinstance(bookings, dict):
-                    flights = bookings.get("flights", {})
-                    
-                    if flights and isinstance(flights, dict):
-                        # Get arrival from outbound
-                        outbound = flights.get("outbound")
-                        if outbound and isinstance(outbound, dict):
-                            segments = outbound.get("segments", [])
-                            if segments and isinstance(segments, list) and len(segments) > 0:
-                                arrive_iso = segments[-1].get("arriveISO", "")
-                                if arrive_iso:
-                                    # Handle both Z and +00:00 timezone formats
-                                    arrive_iso_clean = arrive_iso.replace("Z", "+00:00")
-                                    arrive_dt = datetime.fromisoformat(arrive_iso_clean)
-                                    flight_arrival = arrive_dt.strftime("%H:%M")
-                                    logger.info(f"Flight arrival time: {flight_arrival}")
-                        
-                        # Get departure from inbound (if exists)
-                        inbound = flights.get("inbound")
-                        if inbound and isinstance(inbound, dict):
-                            segments = inbound.get("segments", [])
-                            if segments and isinstance(segments, list) and len(segments) > 0:
-                                depart_iso = segments[0].get("departISO", "")
-                                if depart_iso:
-                                    depart_iso_clean = depart_iso.replace("Z", "+00:00")
-                                    depart_dt = datetime.fromisoformat(depart_iso_clean)
-                                    flight_departure = depart_dt.strftime("%H:%M")
-                                    logger.info(f"Flight departure time: {flight_departure}")
-            except Exception as e:
-                logger.warning(f"Could not extract flight times: {e}")
-            
-            activities = await plan_activities(
-                destination=session.collected_data.get("destination"),
-                start_date=session.collected_data.get("start_date"),
-                end_date=session.collected_data.get("end_date"),
-                adults=session.collected_data.get("adults", 2),
-                children=session.collected_data.get("children", 0),
-                preferences=session.collected_data.get("preferences", []),
-                budget=session.collected_data.get("budget"),
-                flight_arrival_time=flight_arrival,
-                flight_departure_time=flight_departure,
-                language=language
-            )
-            
-            # Build complete plan with defaults selected
-            plan_data = {
-                "bookings": bookings,
-                "activities": activities,
-                "selected": {
-                    "flight": bookings["flights"]["outbound"],
-                    "hotel": bookings["hotels"]["selected"]
-                },
-                "alternatives": {
-                    "flights": bookings["flights"].get("alternatives", []),
-                    "hotels": bookings["hotels"].get("alternatives", [])
-                }
-            }
-            
-            session.current_plan = plan_data
-            session.plan_created = True
-            session.needs_more_info = False
-            
-            # Try to parse the initial message for better context
-            try:
-                initial_msg = session.history[0].content
-                parsed = await parse_prompt(initial_msg, locale="tr-TR" if language == "tr" else "en-US")
-                if not session.collected_data.get("destination"):
-                    session.collected_data["destination"] = parsed.destination.city
-                if not session.collected_data.get("start_date"):
-                    session.collected_data["start_date"] = parsed.dates.start_date
-                if not session.collected_data.get("end_date"):
-                    session.collected_data["end_date"] = parsed.dates.end_date
-                if not session.collected_data.get("adults"):
-                    session.collected_data["adults"] = parsed.travelers.count or 1
-            except Exception as e:
-                logger.warning(f"Could not parse prompt: {e}")
             
             # Build prompt from collected data
             prompt_parts = []
@@ -257,7 +158,7 @@ async def process_conversation_turn(
             
             prompt = ", ".join(prompt_parts)
             
-            # Generate plan using new parallel API
+            # Generate plan - this will handle all the data fetching internally
             plan_request = PlanRequest(
                 prompt=prompt,
                 language=language,

@@ -22,7 +22,6 @@ class TimeSlot(BaseModel):
     startTime: str = Field(..., description="Start time in HH:MM format")
     endTime: str = Field(..., description="End time in HH:MM format")
     options: List[ActivityOption] = Field(..., description="List of activity options for this time slot")
-    block_type: Optional[str] = Field(None, description="morning, afternoon, evening, etc.")
 
 
 class InteractivePlan(BaseModel):

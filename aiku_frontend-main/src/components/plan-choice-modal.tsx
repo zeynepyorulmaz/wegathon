@@ -1,11 +1,11 @@
 "use client";
 
-import { Layers, Zap, Library, X } from "lucide-react";
+import { Layers, Library, X, Calendar } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
-type Mode = "chat" | "step" | "full" | "templates";
+type Mode = "chat" | "step" | "templates" | "timeline";
 
 interface PlanChoiceModalProps {
   onClose: () => void;
@@ -86,6 +86,34 @@ export function PlanChoiceModal({ onClose, onChoose }: PlanChoiceModalProps) {
                   <Button className="w-full mt-4" size="sm">
                     <Layers className="h-4 w-4 mr-2" />
                     Start Chat
+                  </Button>
+                </CardContent>
+              </Card>
+              {/* Timeline Plan Option */}
+              <Card
+                className="cursor-pointer transition-all duration-300 hover:shadow-xl hover:scale-[1.02] hover:border-primary border-2 group relative overflow-hidden"
+                onClick={() => onChoose("timeline" as Mode)}
+              >
+                <CardHeader className="space-y-3 pb-3">
+                  <div className="flex flex-col items-center text-center gap-3">
+                    <div className="h-16 w-16 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
+                      <Calendar className="h-8 w-8 text-primary" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-lg mb-1">Timeline Plan</CardTitle>
+                      <Badge variant="default" className="text-xs">
+                        Throughout Trip
+                      </Badge>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3 pt-0">
+                  <CardDescription className="text-sm leading-relaxed text-center">
+                    Create a full trip plan from your prompt and view it as a timeline
+                  </CardDescription>
+                  <Button className="w-full mt-4" size="sm">
+                    <Calendar className="h-4 w-4 mr-2" />
+                    Generate Timeline
                   </Button>
                 </CardContent>
               </Card>
@@ -183,49 +211,6 @@ export function PlanChoiceModal({ onClose, onChoose }: PlanChoiceModalProps) {
                   >
                     <Library className="h-4 w-4 mr-2" />
                     Browse Templates
-                  </Button>
-                </CardContent>
-              </Card>
-
-              {/* Full AI Option */}
-              <Card
-                className="cursor-pointer transition-all duration-300 hover:shadow-xl hover:scale-[1.02] hover:border-secondary border-2 group"
-                onClick={() => onChoose("full")}
-              >
-                <CardHeader className="space-y-3 pb-3">
-                  <div className="flex flex-col items-center text-center gap-3">
-                    <div className="h-16 w-16 rounded-xl bg-blue-500/10 flex items-center justify-center group-hover:bg-blue-500/20 transition-colors">
-                      <Zap className="h-8 w-8 text-blue-600" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-lg mb-1">Full AI Plan</CardTitle>
-                      <Badge variant="outline" className="text-xs">
-                        Quick Start
-                      </Badge>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3 pt-0">
-                  <CardDescription className="text-sm leading-relaxed text-center">
-                    Get instant complete itinerary with AI recommendations
-                  </CardDescription>
-                  <div className="space-y-2">
-                    <div className="flex items-start gap-2 text-xs text-muted-foreground">
-                      <span className="text-blue-600 font-bold">✓</span>
-                      <span>Instant itinerary</span>
-                    </div>
-                    <div className="flex items-start gap-2 text-xs text-muted-foreground">
-                      <span className="text-blue-600 font-bold">✓</span>
-                      <span>Flight & hotel suggestions</span>
-                    </div>
-                    <div className="flex items-start gap-2 text-xs text-muted-foreground">
-                      <span className="text-blue-600 font-bold">✓</span>
-                      <span>Complete schedule</span>
-                    </div>
-                  </div>
-                  <Button variant="secondary" className="w-full mt-4" size="sm">
-                    <Zap className="h-4 w-4 mr-2" />
-                    Get Full Plan
                   </Button>
                 </CardContent>
               </Card>
