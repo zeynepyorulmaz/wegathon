@@ -20,37 +20,7 @@ router = APIRouter(prefix="/api")
 conversation_sessions: Dict[str, ConversationSession] = {}
 
 
-@router.post(
-    "/plan",
-    response_model=TripPlan,
-    tags=["Planning"],
-    summary="Generate Travel Plan",
-    description="Create a comprehensive travel plan from a natural language prompt",
-    response_description="Complete trip plan with flights, hotels, activities, and itinerary"
-)
-async def plan_endpoint(req: PlanRequest):
-    """
-    Generate a complete travel plan from a text prompt.
-    
-    **Example Request:**
-    ```json
-    {
-      "prompt": "Istanbul to Berlin, 3 days, 2 people, budget-friendly",
-      "language": "tr",
-      "currency": "EUR"
-    }
-    ```
-    
-    **Features:**
-    - Real-time MCP data (flights, hotels, weather, bus)
-    - AI-generated day-by-day itinerary
-    - Price breakdown and total estimation
-    - Weather-adapted activities
-    """
-    try:
-        return await generate(req)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Simple plan endpoint removed - use /chat/start instead for conversational planning
 
 
 @router.post(
@@ -162,39 +132,47 @@ async def refresh_tools_endpoint() -> Dict[str, Any]:
     response_model=ChatResponse,
     tags=["Conversation"],
     summary="Start AI Conversation",
-    description="Begin a conversational trip planning session with AI guidance"
+    description="Begin conversational trip planning - AI will ask for missing information"
 )
 async def start_ai_chat(req: ChatStartRequest) -> ChatResponse:
     """
     Start a new conversational trip planning session.
     
-    **Example Request:**
-    ```json
-    {
-      "initial_message": "Berlin 3 gün",
-      "language": "tr",
-      "currency": "EUR"
-    }
+    **Conversational Flow:**
+    1. AI analyzes your message
+    2. If information is missing, AI asks ONE question at a time
+    3. Once ALL info is collected, AI creates the plan
+    4. You can then revise the plan
+    
+    **Required Information:**
+    - Origin city
+    - Destination city
+    - Start date
+    - End date (or duration)
+    - Number of adults
+    
+    **Example:**
     ```
-    
-    **The AI will:**
-    - Parse your request for trip details
-    - Ask questions for missing information (dates, travelers, etc.)
-    - Create a plan when all details are collected
-    - Handle revisions to the plan
-    
-    Every response includes:
-    - AI's message/question
-    - Latest plan (if ready)
-    - Collected data so far
-    - Whether more info is needed
+    You: "Berlin 3 gün"
+    AI: "Harika! Berlin için 3 günlük bir plan hazırlayayım. Nereden gideceksiniz?"
+    You: "İstanbul"
+    AI: "Teşekkürler! Hangi tarihte gitmek istersiniz?"
+    You: "20 Kasım"
+    AI: "Kaç kişi seyahat edeceksiniz?"
+    You: "2 kişi"
+    AI: "Mükemmel! Planınızı oluşturuyorum..." → [PLAN CREATED]
+    ```
     """
     try:
         # Create new session
         session_id = str(uuid.uuid4())
         session = ConversationSession(session_id=session_id)
+        session.language = req.language
+        session.currency = req.currency
         
-        # Process first turn
+        logger.info(f"Chat started with: {req.initial_message}")
+        
+        # Process message with AI to collect info
         ai_message, plan, needs_more_info = await process_conversation_turn(
             session=session,
             user_message=req.initial_message,
@@ -256,12 +234,17 @@ async def continue_ai_chat(req: ChatContinueRequest) -> ChatResponse:
         
         session = conversation_sessions[req.session_id]
         
-        # Process conversation turn
+        language = session.language or "tr"
+        currency = session.currency or "TRY"
+        
+        logger.info(f"Chat continue with: {req.message}")
+        
+        # Process conversation turn (will either collect more info or create/revise plan)
         ai_message, plan, needs_more_info = await process_conversation_turn(
             session=session,
             user_message=req.message,
-            language="tr",  # Could be stored in session
-            currency="TRY"  # Could be stored in session
+            language=language,
+            currency=currency
         )
         
         # Update session

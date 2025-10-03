@@ -27,8 +27,9 @@ async def get_mcp_tools_schema() -> List[Dict[str, Any]]:
     mcp_tools = await fetch_mcp_tools_from_server()
     
     if not mcp_tools:
-        logger.error("Failed to fetch tools from MCP server. Cannot proceed without MCP tools.")
-        raise RuntimeError("MCP server connection failed. Please ensure MCP server is running.")
+        logger.warning("Failed to fetch tools from MCP server. Proceeding without MCP tools (plan will be AI-generated only).")
+        _cached_mcp_tools = []
+        return []
     
     # Convert MCP tools to Anthropic format
     anthropic_tools = [convert_mcp_tool_to_anthropic(tool) for tool in mcp_tools]

@@ -17,11 +17,13 @@ class ConversationSession(BaseModel):
     Tracks the evolution of trip planning through conversation.
     """
     session_id: str
-    messages: List[ChatMessage] = []
-    collected_data: Dict[str, Any] = {}  # Parsed trip information
+    history: List[ChatMessage] = Field(default_factory=list)  # Changed from 'messages'
+    collected_data: Dict[str, Any] = Field(default_factory=dict)  # Parsed trip information
     current_plan: Optional[Dict[str, Any]] = None  # Latest generated plan
-    ready_to_plan: bool = False  # Has enough info to create plan
+    needs_more_info: bool = True  # Waiting for more user input
     plan_created: bool = False  # Has a plan been created yet
+    language: str = "tr"  # User's preferred language
+    currency: str = "TRY"  # User's preferred currency
     
     
 class ChatStartRequest(BaseModel):

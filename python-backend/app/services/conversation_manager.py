@@ -76,10 +76,10 @@ async def process_conversation_turn(
         (ai_message, current_plan, needs_more_info)
     """
     # Add user message to history
-    session.messages.append(ChatMessage(role="user", content=user_message))
+    session.history.append(ChatMessage(role="user", content=user_message))
     
     # Build conversation context for AI
-    messages = [{"role": msg.role, "content": msg.content} for msg in session.messages]
+    messages = [{"role": msg.role, "content": msg.content} for msg in session.history]
     
     # Add context about current state
     context = {
@@ -135,7 +135,7 @@ async def process_conversation_turn(
             session.collected_data.update(collected_data)
         
         # Add AI message to history
-        session.messages.append(ChatMessage(role="assistant", content=ai_message))
+        session.history.append(ChatMessage(role="assistant", content=ai_message))
         
         # Handle action
         current_plan = None
@@ -147,7 +147,7 @@ async def process_conversation_turn(
             
             # Try to parse the initial message for better data
             try:
-                initial_msg = session.messages[0].content
+                initial_msg = session.history[0].content
                 parsed = await parse_prompt(initial_msg, locale="tr-TR" if language == "tr" else "en-US")
                 
                 # Use parsed data to fill in gaps
