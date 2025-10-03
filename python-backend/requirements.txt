@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+httpx
+python-dotenv
+loguru
+openai==1.*
+pydantic-settings
+pydantic>=2
+
