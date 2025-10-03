@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
 
+    # Anthropic
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(default="claude-3-5-sonnet-20241022", alias="ANTHROPIC_MODEL")
+
     # WEG proxy (optional)
     weg_base_url: str = Field(default="https://ai-server.enuygun.tech", alias="WEG_BASE_URL")
     weg_api_key: str = Field(default="", alias="WEG_API_KEY")
