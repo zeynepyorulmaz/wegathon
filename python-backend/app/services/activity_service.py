@@ -288,8 +288,8 @@ async def _generate_activities_with_alternatives(
     language: str
 ) -> Dict[str, Any]:
     """
-    Generate activities with multiple alternatives per time slot.
-    Template-based for reliability and speed.
+    Generate REAL activities with AI for each time slot.
+    AI provides destination-specific, realistic options.
     """
     time_slots = []
     
@@ -301,11 +301,94 @@ async def _generate_activities_with_alternatives(
         ("18:00-22:00", "evening")
     ]
     
+    # Build comprehensive prompt for ALL activities at once
+    system_prompt = f"""You are a local travel expert in {destination}. Generate 4 SPECIFIC, REAL activity options for each time slot.
+
+RULES:
+- Use REAL places, restaurants, attractions in {destination}
+- Include actual names (e.g., "Brandenburg Gate", "Curry 36", "Museum Island")
+- Be specific about locations
+- Consider time of day (breakfast spots for morning, dinner for evening)
+- Mix popular and hidden gems
+- Family-friendly if children present: {children > 0}
+- Match preferences: {', '.join(preferences) if preferences else 'general tourism'}
+
+Return JSON:
+{{"time_slots": [
+  {{
+    "day": 1,
+    "time": "09:00-12:00",
+    "label": "morning",
+    "options": [
+      {{"text": "Specific activity name", "description": "Why it's great", "location": "Address/area"}},
+      ...4 options total
+    ]
+  }}
+]}}
+
+Language: {"Turkish" if language == "tr" else "English"}"""
+
+    user_prompt = f"""Create {num_days * len(blocks)} time slots for {destination}.
+Days: {num_days}
+Start date: {start_date}
+Adults: {adults}, Children: {children}
+Preferences: {', '.join(preferences) if preferences else 'varied'}
+Budget: {budget or 'mid-range'}
+
+Generate 4 real, specific options for each slot. Use actual place names in {destination}."""
+
+    try:
+        # Call AI to generate ALL activities
+        response = await anthropic_client.chat_with_tools(
+            messages=[{"role": "user", "content": user_prompt}],
+            tools=[],
+            system=system_prompt
+        )
+        
+        # Extract JSON
+        content = response.get("content", [])
+        text = ""
+        for block in content:
+            if block.get("type") == "text":
+                text += block.get("text", "")
+        
+        # Parse JSON
+        import json
+        json_start = text.find("{")
+        json_end = text.rfind("}") + 1
+        if json_start != -1 and json_end > json_start:
+            data = json.loads(text[json_start:json_end])
+            time_slots = data.get("time_slots", [])
+            
+            logger.info(f"✅ AI generated {len(time_slots)} activity slots for {destination}")
+            
+            # Format for our response
+            formatted_slots = []
+            for slot in time_slots:
+                options = slot.get("options", [])
+                formatted_slots.append({
+                    "day": slot.get("day"),
+                    "date": (datetime.fromisoformat(start_date) + timedelta(days=slot.get("day", 1) - 1)).isoformat(),
+                    "time": slot.get("time"),
+                    "label": slot.get("label"),
+                    "selected": options[0] if options else None,
+                    "alternatives": options[1:4] if len(options) > 1 else []
+                })
+            
+            return {
+                "time_slots": formatted_slots,
+                "summary": f"{num_days} günlük {destination} seyahati - Gerçek yerler ve aktiviteler" if language == "tr" else f"{num_days}-day {destination} trip - Real places and activities",
+                "tips": _get_destination_tips(destination, language)
+            }
+            
+    except Exception as e:
+        logger.error(f"AI activity generation failed: {e}, falling back to templates")
+    
+    # Fallback: use templates
     for day_num in range(1, num_days + 1):
         day_date = datetime.fromisoformat(start_date) + timedelta(days=day_num - 1)
         
         for time_range, label in blocks:
-            # Generate 4 alternatives for this time slot
             alternatives = _get_activity_alternatives(
                 destination=destination,
                 day=day_num,
@@ -315,7 +398,6 @@ async def _generate_activities_with_alternatives(
                 language=language
             )
             
-            # First one is default selected
             time_slots.append({
                 "day": day_num,
                 "date": day_date.isoformat(),
@@ -325,16 +407,27 @@ async def _generate_activities_with_alternatives(
                 "alternatives": alternatives[1:] if len(alternatives) > 1 else []
             })
     
-    summary = f"{num_days} günlük {destination} seyahati" if language == "tr" else f"{num_days}-day trip to {destination}"
-    
     return {
         "time_slots": time_slots,
-        "summary": summary,
-        "tips": [
-            "Her aktiviteyi değiştirebilirsiniz" if language == "tr" else "You can change any activity",
-            "Hava durumuna göre uyarlayın" if language == "tr" else "Adapt to weather conditions"
-        ]
+        "summary": f"{num_days} günlük {destination} seyahati" if language == "tr" else f"{num_days}-day trip to {destination}",
+        "tips": _get_destination_tips(destination, language)
     }
+
+
+def _get_destination_tips(destination: str, language: str) -> List[str]:
+    """Get helpful tips based on destination."""
+    if language == "tr":
+        return [
+            f"{destination} için önceden rezervasyon önerilir",
+            "Rahat ayakkabı giyin - çok yürüyeceksiniz",
+            "Yerel para birimi kullanın"
+        ]
+    else:
+        return [
+            f"Pre-booking recommended for {destination}",
+            "Wear comfortable shoes - lots of walking",
+            "Use local currency"
+        ]
 
 
 def _get_activity_alternatives(
