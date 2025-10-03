@@ -157,8 +157,35 @@ async def process_conversation_turn(
                 children=session.collected_data.get("children", 0)
             )
             
-            # Get activities
+            # Get activities with flight/hotel time constraints
             from app.services.activity_service import plan_activities
+            
+            # Extract flight times
+            flight_arrival = None
+            flight_departure = None
+            
+            if bookings.get("flights", {}).get("outbound"):
+                outbound = bookings["flights"]["outbound"]
+                if outbound.get("segments") and len(outbound["segments"]) > 0:
+                    # Get arrival time from first flight
+                    arrive_iso = outbound["segments"][-1].get("arriveISO", "")
+                    if arrive_iso:
+                        try:
+                            arrive_dt = datetime.fromisoformat(arrive_iso.replace("Z", "+00:00"))
+                            flight_arrival = arrive_dt.strftime("%H:%M")
+                        except:
+                            pass
+            
+            if bookings.get("flights", {}).get("inbound"):
+                inbound = bookings["flights"]["inbound"]
+                if inbound.get("segments") and len(inbound["segments"]) > 0:
+                    depart_iso = inbound["segments"][0].get("departISO", "")
+                    if depart_iso:
+                        try:
+                            depart_dt = datetime.fromisoformat(depart_iso.replace("Z", "+00:00"))
+                            flight_departure = depart_dt.strftime("%H:%M")
+                        except:
+                            pass
             
             activities = await plan_activities(
                 destination=session.collected_data.get("destination"),
@@ -168,6 +195,8 @@ async def process_conversation_turn(
                 children=session.collected_data.get("children", 0),
                 preferences=session.collected_data.get("preferences", []),
                 budget=session.collected_data.get("budget"),
+                flight_arrival_time=flight_arrival,
+                flight_departure_time=flight_departure,
                 language=language
             )
             

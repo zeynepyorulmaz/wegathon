@@ -4,10 +4,14 @@ Uses AI to create day-by-day schedules based on destination, dates, and preferen
 """
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
+import asyncio
 
 from app.core.logging import logger
 from app.services import anthropic_client
 from app.models.plan import TripPlan
+
+# Cache for AI-generated activities (key: f"{destination}_{num_days}_{language}")
+_ACTIVITY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 async def plan_activities(
@@ -20,57 +24,73 @@ async def plan_activities(
     budget: Optional[str] = None,
     weather_data: Optional[List[Dict]] = None,
     language: str = "tr",
-    with_alternatives: bool = True
+    flight_arrival_time: Optional[str] = None,  # NEW: First day start time
+    flight_departure_time: Optional[str] = None,  # NEW: Last day end time
+    hotel_checkin_time: str = "14:00",  # NEW: Hotel check-in
+    hotel_checkout_time: str = "11:00"  # NEW: Hotel check-out
 ) -> Dict[str, Any]:
     """
-    Plan daily activities and itinerary with ALTERNATIVES for each time slot.
+    Plan daily activities with REAL time constraints from flights/hotels.
+    
+    **SMART SCHEDULING:**
+    - Day 1: Activities start AFTER flight arrival + hotel check-in
+    - Last Day: Activities end BEFORE hotel checkout + flight departure
+    - Middle days: Full day activities
     
     Args:
         destination: City/destination name
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD)
+        flight_arrival_time: First day flight arrival (HH:MM)
+        flight_departure_time: Last day flight departure (HH:MM)
+        hotel_checkin_time: Hotel check-in time (HH:MM)
+        hotel_checkout_time: Hotel check-out time (HH:MM)
         adults: Number of adults
         children: Number of children
-        preferences: User preferences (e.g., ["museums", "food", "nature"])
-        budget: Budget level ("low", "mid", "high")
-        weather_data: Weather forecast data
+        preferences: User preferences
+        budget: Budget level
+        weather_data: Weather forecast
         language: Response language
-        with_alternatives: If True, generate multiple options per time slot
     
     Returns:
         {
-            "time_slots": [
-                {
-                    "day": 1,
-                    "time": "09:00-12:00",
-                    "label": "morning",
-                    "selected": {...},  # Default selected activity
-                    "alternatives": [{...}, {...}, {...}]  # Alternative activities
-                }
-            ],
+            "time_slots": [...],  # Each with 4 REAL activity options
             "summary": "...",
-            "tips": [...]
+            "constraints": {
+                "day1_start": "15:00",  # After arrival + check-in
+                "last_day_end": "10:00"  # Before checkout
+            }
         }
     """
-    logger.info(f"Planning activities for {destination}: {start_date} to {end_date} (with_alternatives={with_alternatives})")
+    logger.info(f"Planning activities for {destination}: {start_date} to {end_date}")
+    logger.info(f"Flight times - Arrival: {flight_arrival_time}, Departure: {flight_departure_time}")
     
     # Calculate number of days
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
     num_days = (end - start).days + 1
     
-    # If alternatives requested, use template-based generation
-    if with_alternatives:
-        return await _generate_activities_with_alternatives(
-            destination=destination,
-            num_days=num_days,
-            start_date=start_date,
-            adults=adults,
-            children=children,
-            preferences=preferences,
-            budget=budget,
-            language=language
-        )
+    # Calculate activity start/end times for each day
+    day_constraints = _calculate_day_constraints(
+        num_days=num_days,
+        flight_arrival_time=flight_arrival_time,
+        flight_departure_time=flight_departure_time,
+        hotel_checkin_time=hotel_checkin_time,
+        hotel_checkout_time=hotel_checkout_time
+    )
+    
+    # Generate activities with real constraints
+    return await _generate_activities_with_constraints(
+        destination=destination,
+        num_days=num_days,
+        start_date=start_date,
+        adults=adults,
+        children=children,
+        preferences=preferences,
+        budget=budget,
+        day_constraints=day_constraints,
+        language=language
+    )
     
     # Build AI prompt
     system_prompt = _build_activity_system_prompt(language)
@@ -277,7 +297,75 @@ Travelers: {adults} adults"""
     return prompt
 
 
-async def _generate_activities_with_alternatives(
+def _calculate_day_constraints(
+    num_days: int,
+    flight_arrival_time: Optional[str],
+    flight_departure_time: Optional[str],
+    hotel_checkin_time: str,
+    hotel_checkout_time: str
+) -> List[Dict[str, str]]:
+    """
+    Calculate start/end times for each day based on flights and hotel.
+    
+    Returns: [{"day": 1, "start": "16:00", "end": "22:00"}, ...]
+    """
+    constraints = []
+    
+    for day in range(1, num_days + 1):
+        if day == 1:
+            # First day: Start after flight arrival + check-in
+            if flight_arrival_time:
+                # Parse arrival time and add 2 hours for immigration/transport/check-in
+                try:
+                    hour, minute = map(int, flight_arrival_time.split(":"))
+                    arrival_minutes = hour * 60 + minute
+                    start_minutes = arrival_minutes + 120  # +2 hours buffer
+                    
+                    # Ensure not before hotel check-in
+                    checkin_h, checkin_m = map(int, hotel_checkin_time.split(":"))
+                    checkin_minutes = checkin_h * 60 + checkin_m
+                    start_minutes = max(start_minutes, checkin_minutes + 30)  # 30min after check-in
+                    
+                    start_h = start_minutes // 60
+                    start_m = start_minutes % 60
+                    day_start = f"{start_h:02d}:{start_m:02d}"
+                except:
+                    day_start = "16:00"  # Default late afternoon
+            else:
+                day_start = hotel_checkin_time
+            
+            constraints.append({"day": day, "start": day_start, "end": "22:00"})
+            
+        elif day == num_days:
+            # Last day: End before checkout + flight
+            if flight_departure_time:
+                try:
+                    hour, minute = map(int, flight_departure_time.split(":"))
+                    depart_minutes = hour * 60 + minute
+                    end_minutes = depart_minutes - 180  # -3 hours before flight
+                    
+                    # Ensure not after hotel checkout
+                    checkout_h, checkout_m = map(int, hotel_checkout_time.split(":"))
+                    checkout_minutes = checkout_h * 60 + checkout_m
+                    end_minutes = min(end_minutes, checkout_minutes - 30)  # 30min before checkout
+                    
+                    end_h = end_minutes // 60
+                    end_m = end_minutes % 60
+                    day_end = f"{end_h:02d}:{end_m:02d}"
+                except:
+                    day_end = "10:00"  # Default morning
+            else:
+                day_end = hotel_checkout_time
+            
+            constraints.append({"day": day, "start": "08:00", "end": day_end})
+        else:
+            # Middle days: Full day
+            constraints.append({"day": day, "start": "08:00", "end": "22:00"})
+    
+    return constraints
+
+
+async def _generate_activities_with_constraints(
     destination: str,
     num_days: int,
     start_date: str,
@@ -285,121 +373,154 @@ async def _generate_activities_with_alternatives(
     children: int,
     preferences: List[str],
     budget: Optional[str],
+    day_constraints: List[Dict[str, str]],
     language: str
 ) -> Dict[str, Any]:
-    """
-    Generate REAL activities with AI for each time slot.
-    AI provides destination-specific, realistic options.
-    """
-    time_slots = []
+    """Generate activities respecting flight/hotel time constraints."""
     
-    # Time blocks per day
-    blocks = [
-        ("09:00-12:00", "morning"),
-        ("12:00-14:00", "lunch"),
-        ("14:00-18:00", "afternoon"),
-        ("18:00-22:00", "evening")
-    ]
+    # Check cache
+    cache_key = f"{destination}_{num_days}_{language}_{','.join(sorted(preferences))}"
+    if cache_key in _ACTIVITY_CACHE:
+        logger.info(f"✅ Using cached activities for {destination}")
+        return _ACTIVITY_CACHE[cache_key]
     
-    # Build comprehensive prompt for ALL activities at once
-    system_prompt = f"""You are a local travel expert in {destination}. Generate 4 SPECIFIC, REAL activity options for each time slot.
+    # Build smart AI prompt with time constraints
+    constraints_desc = "\n".join([
+        f"Day {c['day']}: Activities from {c['start']} to {c['end']}" 
+        for c in day_constraints
+    ])
+    
+    system_prompt = f"""You are a local travel expert in {destination}. Create REAL, SPECIFIC activity options.
 
-RULES:
-- Use REAL places, restaurants, attractions in {destination}
-- Include actual names (e.g., "Brandenburg Gate", "Curry 36", "Museum Island")
-- Be specific about locations
-- Consider time of day (breakfast spots for morning, dinner for evening)
-- Mix popular and hidden gems
-- Family-friendly if children present: {children > 0}
-- Match preferences: {', '.join(preferences) if preferences else 'general tourism'}
+**TIME CONSTRAINTS (CRITICAL):**
+{constraints_desc}
+
+Day 1: Limited time (flight arrival + hotel check-in)
+Day {num_days}: Limited time (hotel checkout + flight departure)
+
+**RULES:**
+- Use REAL place names in {destination}
+- "Brandenburg Gate", "Curry 36", "Museum Island" not "generic museum"
+- Include address/neighborhood
+- Respect time constraints above
+- 4 options per time slot
+- Mix popular + hidden gems
 
 Return JSON:
 {{"time_slots": [
   {{
     "day": 1,
-    "time": "09:00-12:00",
-    "label": "morning",
+    "time": "16:00-18:00",
+    "label": "evening",
     "options": [
-      {{"text": "Specific activity name", "description": "Why it's great", "location": "Address/area"}},
-      ...4 options total
+      {{"text": "Real place name", "description": "Why visit", "location": "Area"}},
+      ...4 options
     ]
   }}
 ]}}
 
 Language: {"Turkish" if language == "tr" else "English"}"""
 
-    user_prompt = f"""Create {num_days * len(blocks)} time slots for {destination}.
-Days: {num_days}
-Start date: {start_date}
-Adults: {adults}, Children: {children}
+    user_prompt = f"""Plan {destination} activities:
+Days: {num_days} ({start_date})
+Travelers: {adults} adults, {children} children
 Preferences: {', '.join(preferences) if preferences else 'varied'}
-Budget: {budget or 'mid-range'}
+Budget: {budget or 'mid'}
 
-Generate 4 real, specific options for each slot. Use actual place names in {destination}."""
+Time constraints:
+{constraints_desc}
+
+Generate realistic time slots with 4 REAL options each."""
 
     try:
-        # Call AI to generate ALL activities
-        response = await anthropic_client.chat_with_tools(
-            messages=[{"role": "user", "content": user_prompt}],
-            tools=[],
-            system=system_prompt
-        )
+        # AI call with retry
+        for attempt in range(3):
+            try:
+                response = await anthropic_client.chat_with_tools(
+                    messages=[{"role": "user", "content": user_prompt}],
+                    tools=[],
+                    system=system_prompt
+                )
+                break
+            except Exception as e:
+                if "429" in str(e):
+                    if attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))
+                    else:
+                        raise
+                else:
+                    raise
         
-        # Extract JSON
-        content = response.get("content", [])
-        text = ""
-        for block in content:
-            if block.get("type") == "text":
-                text += block.get("text", "")
+        # Parse AI response
+        text = "".join([b.get("text", "") for b in response.get("content", []) if b.get("type") == "text"])
         
-        # Parse JSON
         import json
         json_start = text.find("{")
         json_end = text.rfind("}") + 1
+        
         if json_start != -1 and json_end > json_start:
             data = json.loads(text[json_start:json_end])
-            time_slots = data.get("time_slots", [])
+            slots = data.get("time_slots", [])
             
-            logger.info(f"✅ AI generated {len(time_slots)} activity slots for {destination}")
-            
-            # Format for our response
-            formatted_slots = []
-            for slot in time_slots:
-                options = slot.get("options", [])
-                formatted_slots.append({
+            formatted = []
+            for slot in slots:
+                opts = slot.get("options", [])
+                formatted.append({
                     "day": slot.get("day"),
                     "date": (datetime.fromisoformat(start_date) + timedelta(days=slot.get("day", 1) - 1)).isoformat(),
                     "time": slot.get("time"),
                     "label": slot.get("label"),
-                    "selected": options[0] if options else None,
-                    "alternatives": options[1:4] if len(options) > 1 else []
+                    "selected": opts[0] if opts else None,
+                    "alternatives": opts[1:4] if len(opts) > 1 else []
                 })
             
-            return {
-                "time_slots": formatted_slots,
-                "summary": f"{num_days} günlük {destination} seyahati - Gerçek yerler ve aktiviteler" if language == "tr" else f"{num_days}-day {destination} trip - Real places and activities",
-                "tips": _get_destination_tips(destination, language)
+            result = {
+                "time_slots": formatted,
+                "summary": f"{num_days} günlük {destination} - Gerçek yerler, uçuş/otel saatlerine göre" if language == "tr" else f"{num_days}-day {destination} - Real places, flight/hotel adjusted",
+                "tips": _get_destination_tips(destination, language),
+                "constraints": day_constraints
             }
             
+            _ACTIVITY_CACHE[cache_key] = result
+            logger.info(f"✅ AI activities generated and cached for {destination}")
+            return result
+            
     except Exception as e:
-        logger.error(f"AI activity generation failed: {e}, falling back to templates")
+        logger.error(f"AI failed ({e}), using fallback")
     
-    # Fallback: use templates
-    for day_num in range(1, num_days + 1):
-        day_date = datetime.fromisoformat(start_date) + timedelta(days=day_num - 1)
+    # Fallback to templates if AI fails
+    return _generate_template_activities(destination, num_days, start_date, day_constraints, language)
+
+
+def _generate_template_activities(
+    destination: str,
+    num_days: int,
+    start_date: str,
+    day_constraints: List[Dict[str, str]],
+    language: str
+) -> Dict[str, Any]:
+    """Fallback: template-based activities."""
+    time_slots = []
+    
+    for constraint in day_constraints:
+        day = constraint["day"]
+        day_date = datetime.fromisoformat(start_date) + timedelta(days=day - 1)
+        
+        # Simple time blocks for fallback
+        blocks = [("09:00-12:00", "morning"), ("14:00-18:00", "afternoon"), ("19:00-22:00", "evening")]
         
         for time_range, label in blocks:
             alternatives = _get_activity_alternatives(
                 destination=destination,
-                day=day_num,
+                day=day,
                 time_label=label,
-                preferences=preferences,
-                children=children,
+                preferences=[],
+                children=0,
                 language=language
             )
             
             time_slots.append({
-                "day": day_num,
+                "day": day,
                 "date": day_date.isoformat(),
                 "time": time_range,
                 "label": label,
@@ -409,9 +530,10 @@ Generate 4 real, specific options for each slot. Use actual place names in {dest
     
     return {
         "time_slots": time_slots,
-        "summary": f"{num_days} günlük {destination} seyahati" if language == "tr" else f"{num_days}-day trip to {destination}",
+        "summary": f"{num_days} günlük {destination}" if language == "tr" else f"{num_days}-day {destination}",
         "tips": _get_destination_tips(destination, language)
     }
+
 
 
 def _get_destination_tips(destination: str, language: str) -> List[str]:
