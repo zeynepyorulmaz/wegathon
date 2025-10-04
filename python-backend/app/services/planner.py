@@ -1,4 +1,5 @@
 import json
+import asyncio
 from datetime import datetime
 from typing import Dict, Any, List
 from app.models.plan import TripPlan, PlanRequest, ReviseRequest
@@ -8,19 +9,47 @@ from app.tools import adapters
 from app.tools.adapters import get_mcp_tools_schema
 
 
+def _normalize_block_item_types(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize Claude's sometimes-wrong type names to match our schema."""
+    type_mapping = {
+        "transport": "transfer",
+        "accommodation": "lodging",
+        "hotel": "lodging",
+        "arrival": "flight",
+        "departure": "flight",
+    }
+    
+    days = data.get("days", [])
+    for day in days:
+        blocks = day.get("blocks", [])
+        for block in blocks:
+            items = block.get("items", [])
+            for item in items:
+                if "type" in item:
+                    original_type = item["type"]
+                    normalized_type = type_mapping.get(original_type, original_type)
+                    if original_type != normalized_type:
+                        logger.info(f"_normalize_block_item_types: Normalizing type '{original_type}' -> '{normalized_type}'")
+                        item["type"] = normalized_type
+    
+    return data
+
+
 def _json_only_guard(text: str) -> Dict[str, Any]:
     try:
         if not text or not text.strip():
             logger.error("_json_only_guard: Empty text received")
             raise ValueError("Empty text received")
-        return json.loads(text)
+        data = json.loads(text)
+        return _normalize_block_item_types(data)
     except json.JSONDecodeError as e:
         logger.warning(f"_json_only_guard: Initial JSON parse failed, trying to extract JSON block. Error: {e}")
         s, e = text.find("{"), text.rfind("}")
         if s != -1 and e != -1:
             extracted = text[s : e + 1]
             logger.info(f"_json_only_guard: Extracted JSON block (length: {len(extracted)})")
-            return json.loads(extracted)
+            data = json.loads(extracted)
+            return _normalize_block_item_types(data)
         logger.error(f"_json_only_guard: No JSON found in text: {text[:200]}...")
         raise ValueError(f"No valid JSON found in response: {text[:200]}...")
 
@@ -43,10 +72,31 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
     parsed = query.get("parsed") or {}
     if not isinstance(parsed, dict):
         parsed = {}
-    parsed.setdefault("originCity", parsed.get("from") or obj.get("from") or "")
-    parsed.setdefault("destinationCity", parsed.get("to") or obj.get("to") or "")
-    parsed.setdefault("startDateISO", parsed.get("startDate") or obj.get("startDate") or obj.get("date") or "")
-    parsed.setdefault("endDateISO", parsed.get("endDate") or obj.get("endDate") or "")
+    # City name translation helper
+    def normalize_city_name(city_name: str) -> str:
+        if not city_name:
+            return ""
+        city_translations = {
+            "istanbul": "Istanbul", "i̇stanbul": "Istanbul",
+            "ankara": "Ankara", "izmir": "Izmir", "i̇zmir": "Izmir",
+            "antalya": "Antalya", "roma": "Rome", "milano": "Milan",
+            "venedik": "Venice", "floransa": "Florence", "napoli": "Naples",
+            "paris": "Paris", "londra": "London", "barselona": "Barcelona",
+            "madrid": "Madrid", "berlin": "Berlin", "münih": "Munich",
+            "viyana": "Vienna", "prag": "Prague", "amsterdam": "Amsterdam",
+            "brüksel": "Brussels", "cenevre": "Geneva", "zürih": "Zurich",
+        }
+        normalized = city_name.strip()
+        lower_name = normalized.lower()
+        return city_translations.get(lower_name, normalized)
+    
+    origin_raw = parsed.get("from") or obj.get("from") or parsed.get("originCity") or parsed.get("origin") or ""
+    dest_raw = parsed.get("to") or obj.get("to") or parsed.get("destinationCity") or parsed.get("destination") or ""
+    
+    parsed.setdefault("originCity", normalize_city_name(origin_raw))
+    parsed.setdefault("destinationCity", normalize_city_name(dest_raw))
+    parsed.setdefault("startDateISO", parsed.get("startDate") or obj.get("startDate") or obj.get("date") or obj.get("start_date") or "")
+    parsed.setdefault("endDateISO", parsed.get("endDate") or obj.get("endDate") or obj.get("end_date") or "")
     parsed.setdefault("nights", parsed.get("nights") or obj.get("nights") or 0)
     parsed.setdefault("adults", parsed.get("adults") or obj.get("adults") or 1)
 
@@ -237,8 +287,48 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
             elif label_lower not in ["morning", "afternoon", "evening", "late-night", "transit", "check-in", "check-out"]:
                 label = "morning"
         
-        items = _as_list(b.get("items"))
-        return {"label": label, "items": items, "notes": b.get("notes")}
+        # Normalize items - convert to BlockItem format: {type, data}
+        items_raw = _as_list(b.get("items"))
+        items_normalized = []
+        for item in items_raw:
+            if isinstance(item, str):
+                # Claude returned plain string like "09:50 - Flight departure"
+                # Convert to BlockItem schema: {type: "activity", data: {}}
+                items_normalized.append({
+                    "type": "activity",
+                    "data": {
+                        "provider": "manual",
+                        "title": item,
+                        "notes": item
+                    }
+                })
+            elif isinstance(item, dict):
+                # Check if already has type/data format
+                if "type" in item and "data" in item:
+                    items_normalized.append(item)
+                else:
+                    # Old format or partial - normalize to BlockItem schema
+                    item_type = item.get("type", "activity")
+                    items_normalized.append({
+                        "type": item_type,
+                        "data": item.get("data", {
+                            "provider": "manual",
+                            "title": item.get("text") or item.get("title") or str(item),
+                            "notes": item.get("description") or item.get("notes")
+                        })
+                    })
+            else:
+                # Unknown type, convert to activity
+                items_normalized.append({
+                    "type": "activity",
+                    "data": {
+                        "provider": "manual",
+                        "title": str(item),
+                        "notes": None
+                    }
+                })
+        
+        return {"label": label, "items": items_normalized, "notes": b.get("notes")}
 
     def coerce_day(d):
         if not isinstance(d, dict):
@@ -299,11 +389,31 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
         except (ValueError, TypeError):
             total_estimated = None
     
+    # Normalize confidence - handle if Claude returns number (90) instead of string ("high")
+    confidence_raw = pricing_src.get("confidence")
+    if isinstance(confidence_raw, (int, float)):
+        # Convert percentage to low/medium/high
+        if confidence_raw >= 75:
+            confidence = "high"
+        elif confidence_raw >= 50:
+            confidence = "medium"
+        else:
+            confidence = "low"
+    elif isinstance(confidence_raw, str):
+        # Already string, validate it
+        confidence_lower = confidence_raw.lower()
+        if confidence_lower in ["low", "medium", "high"]:
+            confidence = confidence_lower
+        else:
+            confidence = "low"
+    else:
+        confidence = "low"
+    
     pricing_norm = {
         "currency": pricing_src.get("currency") or obj.get("currency") or "USD",
         "breakdown": breakdown,
         "totalEstimated": total_estimated,
-        "confidence": pricing_src.get("confidence") or "low",
+        "confidence": confidence,
         "notes": _as_list(pricing_src.get("notes")) or None,
     }
 
@@ -351,6 +461,7 @@ def _parse_dt(date_str: str | None, time_str: str | None) -> str:
 
 def _map_mcp_flights(data: Dict[str, Any]) -> Dict[str, Any] | None:
     try:
+        logger.info(f"_map_mcp_flights: Raw MCP data: {json.dumps(data, indent=2)}")
         # Handle MCP content array format
         if "content" in data and isinstance(data["content"], list):
             for item in data["content"]:
@@ -358,27 +469,35 @@ def _map_mcp_flights(data: Dict[str, Any]) -> Dict[str, Any] | None:
                     import json as json_lib
                     try:
                         data = json_lib.loads(item.get("text", "{}"))
+                        logger.info(f"_map_mcp_flights: Parsed content text: {json.dumps(data, indent=2)}")
                     except:
                         pass
         
         # Support both direct and wrapped under "data"
         root = data.get("data") if isinstance(data, dict) and "data" in data else data
         flights = root.get("flights") if isinstance(root, dict) else None
+        logger.info(f"_map_mcp_flights: flights data: {flights}")
         if not flights:
+            logger.warning("_map_mcp_flights: No flights data found!")
             return None
         dep_list = _as_list(flights.get("departure"))
         ret_list = _as_list(flights.get("return"))
+        logger.info(f"_map_mcp_flights: departure count: {len(dep_list)}, return count: {len(ret_list)}")
 
         def map_option(opt: Dict[str, Any]) -> Dict[str, Any]:
             segs = []
             for s in _as_list(opt.get("segments")):
                 dep = s.get("departure_datetime", {})
                 arr = s.get("arrival_datetime", {})
+                logger.info(f"_map_mcp_flights: Segment - dep: {dep}, arr: {arr}")
+                depart_iso = _parse_dt(dep.get("date"), dep.get("time"))
+                arrive_iso = _parse_dt(arr.get("date"), arr.get("time"))
+                logger.info(f"_map_mcp_flights: Parsed ISO - departISO: {depart_iso}, arriveISO: {arrive_iso}")
                 segs.append({
                     "fromIata": s.get("origin") or "",
                     "toIata": s.get("destination") or "",
-                    "departISO": _parse_dt(dep.get("date"), dep.get("time")),
-                    "arriveISO": _parse_dt(arr.get("date"), arr.get("time")),
+                    "departISO": depart_iso,
+                    "arriveISO": arrive_iso,
                     "airline": s.get("marketing_airline") or s.get("operating_airline") or "",
                     "flightNumber": s.get("flight_number") or "",
                     "durationMinutes": int((s.get("duration") or {}).get("total_minutes") or 0),
@@ -401,8 +520,10 @@ def _map_mcp_flights(data: Dict[str, Any]) -> Dict[str, Any] | None:
         return None
 
 
-def _map_mcp_hotels(data: Dict[str, Any]) -> Dict[str, Any] | None:
+def _map_mcp_hotels(data: Dict[str, Any], check_in_iso: str = "", check_out_iso: str = "") -> Dict[str, Any] | None:
     try:
+        logger.info(f"_map_mcp_hotels: Raw MCP data: {json.dumps(data, indent=2)}")
+        logger.info(f"_map_mcp_hotels: Check-in/out dates: {check_in_iso} → {check_out_iso}")
         # Handle MCP content array format
         if "content" in data and isinstance(data["content"], list):
             for item in data["content"]:
@@ -410,13 +531,16 @@ def _map_mcp_hotels(data: Dict[str, Any]) -> Dict[str, Any] | None:
                     import json as json_lib
                     try:
                         data = json_lib.loads(item.get("text", "{}"))
+                        logger.info(f"_map_mcp_hotels: Parsed content text: {json.dumps(data, indent=2)}")
                     except:
                         pass
         
         options = data.get("options") or data.get("results") or data.get("hotels") or []
+        logger.info(f"_map_mcp_hotels: Found {len(options)} hotel options")
         if not options:
             return None
         first = options[0]
+        logger.info(f"_map_mcp_hotels: First hotel: {json.dumps(first, indent=2)}")
         
         # Normalize rating - handle "9.4/10" or string format
         rating = first.get("rating")
@@ -440,13 +564,18 @@ def _map_mcp_hotels(data: Dict[str, Any]) -> Dict[str, Any] | None:
                 rating = None
                 logger.warning("_map_mcp_hotels: Could not convert rating to float")
         
+        # Use dates from MCP response first, fallback to provided dates
+        final_check_in = first.get("checkInISO") or check_in_iso or ""
+        final_check_out = first.get("checkOutISO") or check_out_iso or ""
+        logger.info(f"_map_mcp_hotels: Final dates - checkIn={final_check_in}, checkOut={final_check_out}")
+        
         return {
             "selected": {
                 "provider": first.get("provider") or "mcp",
                 "name": first.get("name") or "",
                 "address": first.get("address"),
-                "checkInISO": first.get("checkInISO") or "",
-                "checkOutISO": first.get("checkOutISO") or "",
+                "checkInISO": final_check_in,
+                "checkOutISO": final_check_out,
                 "priceTotal": first.get("priceTotal") or first.get("price"),
                 "currency": first.get("currency"),
                 "rating": rating,
@@ -512,13 +641,73 @@ def _map_mcp_bus(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None) -> Dict[str, Any]:
+async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None, tool_call_context=None) -> Dict[str, Any]:
     """
     Enrich plan with real MCP data.
-    Can use parsed_input (from prompt_parser) for more accurate queries.
+    Can use tool_call_context (from previous successful tool calls), parsed_input (from prompt_parser), or plan data.
     """
-    # Prefer parsed_input if available
-    if parsed_input:
+    # PRIORITY 1: Use tool call context (most reliable - from actual successful tool calls)
+    if tool_call_context:
+        flight_input = tool_call_context.get("flight_search", {})
+        hotel_input = tool_call_context.get("hotel_search", {})
+        
+        if flight_input:
+            logger.info(f"_enrich_with_mcp: Using flight_search tool context: {flight_input}")
+            origin = flight_input.get("origin") or ""
+            dest = flight_input.get("destination") or ""
+            depart = flight_input.get("departure_date") or ""
+            ret = flight_input.get("return_date") or ""
+            adults = flight_input.get("adults") or 1
+            
+            # Convert date format if needed (DD.MM.YYYY -> YYYY-MM-DD)
+            def convert_date(date_str: str) -> str:
+                if not date_str:
+                    return ""
+                try:
+                    if "." in date_str:  # DD.MM.YYYY format
+                        from datetime import datetime
+                        dt = datetime.strptime(date_str, "%d.%m.%Y")
+                        return dt.strftime("%Y-%m-%d")
+                    return date_str
+                except:
+                    return date_str
+            
+            depart = convert_date(depart)
+            ret = convert_date(ret)
+            
+            logger.info(f"_enrich_with_mcp: ✅ Extracted from tool context - origin={origin}, dest={dest}, depart={depart}, ret={ret}, adults={adults}")
+        elif hotel_input:
+            # If only hotel search was done, extract dates from there
+            logger.info(f"_enrich_with_mcp: Using hotel_search tool context: {hotel_input}")
+            dest = hotel_input.get("destination_name") or ""
+            depart = hotel_input.get("check_in_date") or ""
+            ret = hotel_input.get("check_out_date") or ""
+            adults = hotel_input.get("adults") or 1
+            origin = ""  # Not available in hotel search
+            
+            # Convert date format if needed
+            def convert_date(date_str: str) -> str:
+                if not date_str:
+                    return ""
+                try:
+                    if "." in date_str:  # DD.MM.YYYY format
+                        from datetime import datetime
+                        dt = datetime.strptime(date_str, "%d.%m.%Y")
+                        return dt.strftime("%Y-%m-%d")
+                    return date_str
+                except:
+                    return date_str
+            
+            depart = convert_date(depart)
+            ret = convert_date(ret)
+            
+            logger.info(f"_enrich_with_mcp: ✅ Extracted from hotel context - dest={dest}, depart={depart}, ret={ret}, adults={adults}")
+        else:
+            logger.warning("_enrich_with_mcp: Tool context provided but no flight_search or hotel_search found")
+            origin = dest = depart = ret = ""
+            adults = 1
+    # PRIORITY 2: Use parsed_input if available
+    elif parsed_input:
         origin = parsed_input.departure.city
         dest = parsed_input.destination.city
         depart = parsed_input.dates.start_date or ""
@@ -558,105 +747,139 @@ async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None) -> Dict[str,
     else:
         # Fallback to plan's parsed data
         parsed = plan.get("query", {}).get("parsed", {})
-        origin = parsed.get("originIata") or parsed.get("originCity") or ""
-        dest = parsed.get("destinationIata") or parsed.get("destinationCity") or ""
+        
+        # City name translation map (Turkish -> English)
+        city_translations = {
+            "istanbul": "Istanbul",
+            "i̇stanbul": "Istanbul",
+            "ankara": "Ankara",
+            "izmir": "Izmir",
+            "i̇zmir": "Izmir",
+            "antalya": "Antalya",
+            "roma": "Rome",
+            "milano": "Milan",
+            "venedik": "Venice",
+            "floransa": "Florence",
+            "napoli": "Naples",
+            "paris": "Paris",
+            "londra": "London",
+            "barselona": "Barcelona",
+            "madrid": "Madrid",
+            "berlin": "Berlin",
+            "münih": "Munich",
+            "viyana": "Vienna",
+            "prag": "Prague",
+            "amsterdam": "Amsterdam",
+            "brüksel": "Brussels",
+            "cenevre": "Geneva",
+            "zürih": "Zurich",
+        }
+        
+        def normalize_city(city_name: str) -> str:
+            if not city_name:
+                return ""
+            # Try exact match first
+            normalized = city_name.strip()
+            lower_name = normalized.lower()
+            if lower_name in city_translations:
+                return city_translations[lower_name]
+            # Return as-is if no translation found
+            return normalized
+        
+        origin_raw = parsed.get("originIata") or parsed.get("originCity") or ""
+        dest_raw = parsed.get("destinationIata") or parsed.get("destinationCity") or ""
+        origin = normalize_city(origin_raw)
+        dest = normalize_city(dest_raw)
         depart = parsed.get("startDateISO") or ""
         ret = parsed.get("endDateISO") or ""
         adults = parsed.get("adults") or 1
-        logger.info(f"_enrich_with_mcp: Using plan data - origin={origin}, dest={dest}, depart={depart}, ret={ret}")
+        logger.info(f"_enrich_with_mcp: Using plan data - origin={origin} (from: {origin_raw}), dest={dest} (from: {dest_raw}), depart={depart}, ret={ret}")
 
     diagnostics: List[Dict[str, Any]] = []
 
-    # Flights - call REAL MCP
-    try:
-        logger.info("_enrich_with_mcp: Calling MCP flight_search...")
-        flights_data, flights_diag = await adapters.flights_search({
-            "origin": origin,
-            "destination": dest,
-            "departDateISO": depart,
-            "returnDateISO": ret,
-            "adults": adults,
-        })
-        logger.info(f"_enrich_with_mcp: flight_search returned {len(str(flights_data))} bytes")
-        logger.info(f"_enrich_with_mcp: flight_search data structure: {list(flights_data.keys()) if isinstance(flights_data, dict) else type(flights_data)}")
-        if isinstance(flights_data, dict) and flights_data:
-            # Log first few keys to understand structure
-            sample_keys = list(flights_data.keys())[:10]
-            logger.info(f"_enrich_with_mcp: flight_search top-level keys: {sample_keys}")
-        diagnostics.append(flights_diag)
-        mapped = _map_mcp_flights(flights_data) or plan.get("flights")
-        if mapped:
-            logger.info(f"_enrich_with_mcp: Mapped flights: {mapped.get('outbound', {}).get('provider', 'N/A')}")
-            plan["flights"] = mapped
-        else:
-            logger.warning("_enrich_with_mcp: No flights mapped")
-    except Exception as e:
-        logger.error(f"_enrich_with_mcp: flight_search error: {e}")
-        diagnostics.append({"tool":"flights.search","ok":False,"error":str(e)})
-
-    # Hotels - call REAL MCP
-    try:
-        logger.info("_enrich_with_mcp: Calling MCP hotel_search...")
-        hotels_data, hotels_diag = await adapters.hotels_search({
-            "city": dest,
-            "checkInISO": depart,
-            "checkOutISO": ret,
-            "rooms": 1,
-            "occupants": adults,
-        })
-        logger.info(f"_enrich_with_mcp: hotel_search returned {len(str(hotels_data))} bytes")
-        logger.info(f"_enrich_with_mcp: hotel_search data structure: {list(hotels_data.keys()) if isinstance(hotels_data, dict) else type(hotels_data)}")
-        if isinstance(hotels_data, dict) and hotels_data:
-            sample_keys = list(hotels_data.keys())[:10]
-            logger.info(f"_enrich_with_mcp: hotel_search top-level keys: {sample_keys}")
-        diagnostics.append(hotels_diag)
-        mapped_h = _map_mcp_hotels(hotels_data) or plan.get("lodging")
-        if mapped_h:
-            logger.info(f"_enrich_with_mcp: Mapped hotel: {mapped_h.get('selected', {}).get('name', 'N/A')}")
-            plan["lodging"] = mapped_h
-        else:
-            logger.warning("_enrich_with_mcp: No hotels mapped")
-    except Exception as e:
-        logger.error(f"_enrich_with_mcp: hotel_search error: {e}")
-        diagnostics.append({"tool":"hotels.search","ok":False,"error":str(e)})
-
-    # Weather
-    try:
-        weather_data, weather_diag = await adapters.weather_forecast({
-            "city": dest,
-            "startDateISO": depart,
-            "endDateISO": ret,
-        })
-        diagnostics.append(weather_diag)
-        mapped_w = _map_mcp_weather(weather_data, depart, ret)
-        if mapped_w:
-            plan["weather"] = mapped_w
-    except Exception as e:
-        diagnostics.append({"tool":"weather.forecast","ok":False,"error":str(e)})
+    # 🚀 PARALLEL MCP CALLS - All at once!
+    logger.info("_enrich_with_mcp: 🚀 Starting PARALLEL MCP calls (flights + hotels + weather)...")
+    import asyncio
     
-    # Bus Search (for intercity transport options)
-    try:
-        logger.info("_enrich_with_mcp: Calling MCP bus_search for transport options...")
-        bus_data, bus_diag = await adapters.bus_search({
-            "origin": origin,
-            "destination": dest,
-            "departDateISO": depart,
-            "adults": adults,
-        })
-        logger.info(f"_enrich_with_mcp: bus_search returned {len(str(bus_data))} bytes")
-        diagnostics.append(bus_diag)
-        
-        # Map bus data to transport section
-        mapped_bus = _map_mcp_bus(bus_data)
-        if mapped_bus:
-            logger.info(f"_enrich_with_mcp: Mapped {len(mapped_bus)} bus options")
-            plan.setdefault("transport", {})
-            plan["transport"]["intercity"] = mapped_bus
-        else:
-            logger.warning("_enrich_with_mcp: No bus options mapped")
-    except Exception as e:
-        logger.error(f"_enrich_with_mcp: bus_search error: {e}")
-        diagnostics.append({"tool":"bus.search","ok":False,"error":str(e)})
+    async def fetch_flights():
+        try:
+            logger.info("_enrich_with_mcp: → Calling flight_search...")
+            flights_data, flights_diag = await adapters.flights_search({
+                "origin": origin,
+                "destination": dest,
+                "departDateISO": depart,
+                "returnDateISO": ret,
+                "adults": adults,
+            })
+            logger.info(f"_enrich_with_mcp: ✓ flight_search completed ({len(str(flights_data))} bytes)")
+            mapped = _map_mcp_flights(flights_data) or plan.get("flights")
+            return mapped, flights_diag
+        except Exception as e:
+            logger.error(f"_enrich_with_mcp: ✗ flight_search error: {e}")
+            return None, {"tool":"flights.search","ok":False,"error":str(e)}
+    
+    async def fetch_hotels():
+        try:
+            logger.info("_enrich_with_mcp: → Calling hotel_search...")
+            hotels_data, hotels_diag = await adapters.hotels_search({
+                "city": dest,
+                "checkInISO": depart,
+                "checkOutISO": ret,
+                "rooms": 1,
+                "occupants": adults,
+            })
+            logger.info(f"_enrich_with_mcp: ✓ hotel_search completed ({len(str(hotels_data))} bytes)")
+            mapped_h = _map_mcp_hotels(hotels_data, depart, ret) or plan.get("lodging")
+            return mapped_h, hotels_diag
+        except Exception as e:
+            logger.error(f"_enrich_with_mcp: ✗ hotel_search error: {e}")
+            return None, {"tool":"hotels.search","ok":False,"error":str(e)}
+    
+    async def fetch_weather():
+        try:
+            logger.info("_enrich_with_mcp: → Calling weather_forecast...")
+            weather_data, weather_diag = await adapters.weather_forecast({
+                "city": dest,
+                "startDateISO": depart,
+                "endDateISO": ret,
+            })
+            logger.info(f"_enrich_with_mcp: ✓ weather_forecast completed")
+            mapped_w = _map_mcp_weather(weather_data, depart, ret)
+            return mapped_w, weather_diag
+        except Exception as e:
+            logger.error(f"_enrich_with_mcp: ✗ weather_forecast error: {e}")
+            return None, {"tool":"weather.forecast","ok":False,"error":str(e)}
+    
+    # Execute all in parallel
+    results = await asyncio.gather(
+        fetch_flights(),
+        fetch_hotels(),
+        fetch_weather(),
+        return_exceptions=True
+    )
+    
+    logger.info("_enrich_with_mcp: ✅ All parallel calls completed!")
+    
+    # Process results
+    if not isinstance(results[0], Exception):
+        flights_mapped, flights_diag = results[0]
+        diagnostics.append(flights_diag)
+        if flights_mapped:
+            logger.info(f"_enrich_with_mcp: Mapped flights: {flights_mapped.get('outbound', {}).get('provider', 'N/A')}")
+            plan["flights"] = flights_mapped
+    
+    if not isinstance(results[1], Exception):
+        hotels_mapped, hotels_diag = results[1]
+        diagnostics.append(hotels_diag)
+        if hotels_mapped:
+            logger.info(f"_enrich_with_mcp: Mapped hotel: {hotels_mapped.get('selected', {}).get('name', 'N/A')}")
+            plan["lodging"] = hotels_mapped
+    
+    if not isinstance(results[2], Exception):
+        weather_mapped, weather_diag = results[2]
+        diagnostics.append(weather_diag)
+        if weather_mapped:
+            plan["weather"] = weather_mapped
 
     plan.setdefault("metadata", {})
     md = plan["metadata"]
@@ -664,7 +887,7 @@ async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None) -> Dict[str,
     return plan
 
 
-async def generate(req: PlanRequest) -> TripPlan:
+async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
     """
     Uses Anthropic with tool use to generate a TripPlan, calling MCP tools as needed.
     
@@ -672,7 +895,38 @@ async def generate(req: PlanRequest) -> TripPlan:
     1. Parse natural language prompt into structured data
     2. Use parsed data to make targeted MCP calls (flights, hotels, weather)
     3. Generate comprehensive plan with Claude using real MCP data
+    
+    Args:
+        req: Plan request with prompt, language, currency
+        session_id: Optional session ID for real-time progress updates via SSE
     """
+    
+    async def send_progress(stage: str, message: str, data: dict = None):
+        """Send progress update if session_id provided"""
+        if session_id:
+            # Import here to avoid circular dependency
+            from app.routers import plan as plan_router
+            if session_id in plan_router.progress_queues:
+                event = {"stage": stage, "message": message}
+                if data:
+                    event["data"] = data
+                await plan_router.progress_queues[session_id].put(event)
+    
+    # Check cache first
+    from app.services.cache_service import get_cache
+    cache = get_cache()
+    cache_key = cache._generate_key("plan", {
+        "prompt": req.prompt,
+        "language": req.language or "en",
+        "currency": req.currency or "USD"
+    })
+    
+    cached_plan = cache.get(cache_key)
+    if cached_plan:
+        logger.info(f"generate: Using cached plan for prompt: {req.prompt[:50]}...")
+        await send_progress("cache", "Önbellekten plan yükleniyor...")
+        return TripPlan.model_validate(cached_plan)
+    
     # Step 1: Parse the prompt for better understanding
     logger.info(f"generate: Parsing prompt: {req.prompt[:100]}...")
     try:
@@ -702,8 +956,12 @@ async def generate(req: PlanRequest) -> TripPlan:
         "## TOOL USAGE STRATEGY (MANDATORY):\n"
         "**YOU MUST USE THE AVAILABLE TOOLS** to get real flight, hotel, and weather data. Do NOT make up prices or availability.\n\n"
         "1. **ALWAYS call flight_search** with origin, destination, departure_date, return_date, adults\n"
+        "   - **CRITICAL**: Use ENGLISH city names for origin/destination (e.g., 'Istanbul' NOT 'İstanbul', 'Rome' NOT 'Roma', 'Munich' NOT 'Münih')\n"
+        "   - Use standard IATA codes when known (e.g., IST, FCO, MUC)\n"
         "2. **ALWAYS call hotel_search** with destination_name, check_in_date, check_out_date, adults\n"
+        "   - **CRITICAL**: Use ENGLISH city names (e.g., 'Rome' NOT 'Roma', 'Venice' NOT 'Venedik')\n"
         "3. **ALWAYS call flight_weather_forecast** (or appropriate weather tool) with location, start_date, end_date\n"
+        "   - **CRITICAL**: Use ENGLISH city names\n"
         "4. **Use the REAL DATA from tool results** to create your plan\n"
         "5. If a tool fails, note it in warnings but continue with estimated data\n\n"
         "**IMPORTANT: You have access to real-time MCP tools. USE THEM FIRST before generating the final JSON plan.**\n\n"
@@ -731,9 +989,20 @@ async def generate(req: PlanRequest) -> TripPlan:
         "After using tools and gathering data, return ONLY a strict JSON object matching the TripPlan schema.\n"
         "Required top-level keys: query, summary, flights, lodging, transport, weather, days, pricing, metadata.\n"
         "- **summary**: 2-3 sentence overview highlighting trip highlights and key logistics\n"
-        "- **days**: Detailed day-by-day itinerary with blocks (morning/afternoon/evening) and realistic activities\n"
-        "- **pricing**: Breakdown with confidence level and notes about variable costs\n"
+        "- **days**: MUST be an array with at least one day object. Each day MUST have 'dateISO' and 'blocks' array\n"
+        "  Example: `\"days\": [{\"dateISO\": \"2025-12-21T00:00:00Z\", \"blocks\": [{\"label\": \"morning\", \"items\": [\"Breakfast at hotel\", \"Visit Colosseum\"]}]}]`\n"
+        "  NOTE: Items can be simple strings OR objects with {text, description, time, location, price, booking}\n"
+        "- **pricing**: Breakdown with confidence level ('low', 'medium', or 'high') and notes about variable costs\n"
         "- **metadata.warnings**: Include any important notes (visa requirements, peak season, health advisories, etc.)\n\n"
+        
+        "**CRITICAL DATA FORMAT RULES:**\n"
+        "- ALL prices MUST be pure numbers (not strings like '26922 TRY')\n"
+        "- Use: `\"price\": 26922` NOT `\"price\": \"26922 TRY\"`\n"
+        "- For pricing.breakdown: `{\"flights\": 26922, \"transport\": 600}` (numbers only!)\n"
+        "- For pricing.confidence: Use string 'low', 'medium', or 'high' (NOT numbers like 90)\n"
+        "- For ratings: `\"rating\": 9.4` NOT `\"rating\": \"9.4/10\"`\n"
+        "- For days[].blocks[].items: Can be strings OR objects, both work\n"
+        "- Currency symbols go in separate 'currency' field, NOT in the number\n\n"
         
         "Be thorough, realistic, and delightful. Create a plan the traveler will be excited to follow!"
     )
@@ -779,6 +1048,9 @@ async def generate(req: PlanRequest) -> TripPlan:
     messages = [{"role": "user", "content": user_msg}]
     tools = await get_mcp_tools_schema()
     
+    # Store tool call inputs for later use (if we need to re-enrich with MCP)
+    tool_call_context = {}
+    
     # Tool use loop
     max_turns = 10
     for turn in range(max_turns):
@@ -811,9 +1083,16 @@ async def generate(req: PlanRequest) -> TripPlan:
                         tool_diags = obj.get("metadata", {}).get("toolDiagnostics", [])
                         if not tool_diags or len(tool_diags) == 0:
                             logger.warning("generate: Claude did not use tools, applying manual MCP enrichment")
-                            obj = await _enrich_with_mcp(obj, parsed_input)
+                            obj = await _enrich_with_mcp(obj, parsed_input, tool_call_context)
                         
-                        return TripPlan.model_validate(obj)
+                        plan = TripPlan.model_validate(obj)
+                        
+                        # Cache the result
+                        from datetime import timedelta
+                        cache.set(cache_key, plan.model_dump(), ttl=timedelta(hours=2))
+                        logger.info(f"generate: Cached plan for {req.prompt[:50]}...")
+                        
+                        return plan
                     except Exception as e:
                         logger.error(f"generate: Error parsing/validating response: {e}")
                         logger.error(f"generate: Raw text: {raw[:1000]}")
@@ -828,31 +1107,62 @@ async def generate(req: PlanRequest) -> TripPlan:
             # Append assistant message
             messages.append({"role": "assistant", "content": content_blocks})
             
-            # Execute all tool calls
+            # Execute all tool calls IN PARALLEL
             tool_results = []
-            for block in content_blocks:
-                if block.get("type") == "tool_use":
-                    tool_name = block.get("name")
-                    tool_input = block.get("input", {})
-                    tool_use_id = block.get("id")
+            tool_blocks = [b for b in content_blocks if b.get("type") == "tool_use"]
+            
+            # Send progress for tool execution
+            tool_names = [b.get("name") for b in tool_blocks]
+            if "flight_search" in tool_names:
+                await send_progress("flights", "Uçuş seçenekleri aranıyor...")
+            if "hotel_search" in tool_names:
+                await send_progress("hotels", "Otel seçenekleri aranıyor...")
+            if "flight_weather_forecast" in tool_names or "weather_forecast" in tool_names:
+                await send_progress("weather", "Hava durumu bilgisi alınıyor...")
+            
+            # Execute tools in parallel
+            async def execute_tool(block):
+                tool_name = block.get("name")
+                tool_input = block.get("input", {})
+                tool_use_id = block.get("id")
+                
+                logger.info(f"generate: Executing tool '{tool_name}' with input: {tool_input}")
+                
+                # Store tool input for potential reuse
+                tool_call_context[tool_name] = tool_input
+                
+                try:
+                    tool_data, tool_diag = await _execute_mcp_tool(tool_name, tool_input)
+                    logger.info(f"generate: Tool '{tool_name}' completed: {tool_diag}")
                     
-                    logger.info(f"generate: Executing tool '{tool_name}' with input: {tool_input}")
+                    # Send progress update
+                    if tool_name == "flight_search":
+                        await send_progress("flights", "✓ Uçuş seçenekleri bulundu", {"count": len(tool_data) if isinstance(tool_data, list) else 1})
+                    elif tool_name == "hotel_search":
+                        await send_progress("hotels", "✓ Otel seçenekleri bulundu", {"count": len(tool_data) if isinstance(tool_data, list) else 1})
+                    elif "weather" in tool_name:
+                        await send_progress("weather", "✓ Hava durumu bilgisi alındı")
                     
-                    # Execute tool
-                    try:
-                        tool_data, tool_diag = await _execute_mcp_tool(tool_name, tool_input)
-                        logger.info(f"generate: Tool '{tool_name}' completed: {tool_diag}")
-                    except Exception as e:
-                        logger.error(f"generate: Tool '{tool_name}' failed: {e}")
-                        tool_data = {"error": str(e)}
-                        tool_diag = {"tool": tool_name, "ok": False, "error": str(e)}
-                    
-                    # Append result
-                    tool_results.append({
+                    return {
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
-                        "content": json.dumps(tool_data, ensure_ascii=False),
-                    })
+                        "content": json.dumps(tool_data) if not isinstance(tool_data, str) else tool_data
+                    }
+                except Exception as e:
+                    logger.error(f"generate: Tool '{tool_name}' failed: {e}")
+                    tool_data = {"error": str(e)}
+                    tool_diag = {"tool": tool_name, "ok": False, "error": str(e)}
+                    return {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": json.dumps(tool_data)
+                    }
+            
+            # Execute all tools in parallel
+            tool_results = await asyncio.gather(*[execute_tool(block) for block in tool_blocks])
+            
+            # Send final itinerary progress after tools
+            await send_progress("itinerary", "Gezi programı oluşturuluyor...")
             
             # Append tool results
             messages.append({"role": "user", "content": tool_results})

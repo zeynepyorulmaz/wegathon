@@ -83,7 +83,7 @@ async def transform_to_interactive(
                     data = item.get("data") or {}
                     options.append({
                         "text": data.get("title") or "Activity",
-                        "description": data.get("notes") or data.get("category"),
+                        "description": data.get("notes") or data.get("category") or "",
                         "price": data.get("price"),
                         "duration": data.get("durationMinutes"),
                         "location": (data.get("location") or {}).get("name"),
@@ -99,7 +99,7 @@ async def transform_to_interactive(
                 }.get(label, label.title())
                 options.append({
                     "text": label_title,
-                    "description": None,
+                    "description": "",
                     "price": None,
                     "duration": None,
                     "location": None,

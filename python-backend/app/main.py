@@ -1,11 +1,39 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.routers.plan import router as api_router
+from app.services.mcp_pool import initialize_mcp_pool, get_mcp_pool
+from app.core.logging import logger
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events - startup and shutdown."""
+    # Startup
+    logger.info("🚀 Starting AIKU Travel Planner API...")
+    try:
+        await initialize_mcp_pool()
+        logger.info("✅ MCP Session Pool initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize MCP pool: {e}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Shutting down AIKU Travel Planner API...")
+    try:
+        pool = get_mcp_pool()
+        await pool.shutdown()
+        logger.info("✅ MCP Session Pool shutdown complete")
+    except Exception as e:
+        logger.error(f"❌ Error during shutdown: {e}")
+
 
 app = FastAPI(
     title="AIKU - AI Travel Planner API",
-    version="1.1.0",
+    version="2.0.0",
+    lifespan=lifespan,
     description="""
 ## 🌍 AI-Powered Travel Planning System
 
@@ -82,10 +110,31 @@ app.include_router(api_router)
 )
 async def health():
     """
-    Simple health check endpoint.
+    Simple health check endpoint with MCP pool and cache stats.
     
     Returns:
         - **status**: "ok" if the service is running
+        - **mcp_pool**: Connection pool statistics
+        - **cache**: Cache statistics
     """
-    return {"status": "ok", "version": "1.0.0", "service": "AIKU Travel Planner"}
+    try:
+        pool = get_mcp_pool()
+        pool_stats = await pool.get_stats()
+    except Exception as e:
+        pool_stats = {"error": str(e)}
+    
+    try:
+        from app.services.cache_service import get_cache
+        cache = get_cache()
+        cache_stats = cache.get_stats()
+    except Exception as e:
+        cache_stats = {"error": str(e)}
+    
+    return {
+        "status": "ok",
+        "version": "2.0.0",
+        "service": "AIKU Travel Planner",
+        "mcp_pool": pool_stats,
+        "cache": cache_stats
+    }
 

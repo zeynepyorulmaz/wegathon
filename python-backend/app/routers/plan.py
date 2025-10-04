@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from typing import Dict, List, Any
 from app.models.plan import PlanRequest, ReviseRequest, TripPlan
 from app.models.parser_schemas import ParsePromptRequest, ParsedTripPrompt
@@ -10,9 +11,12 @@ from app.services.planner import generate, revise
 from app.services.prompt_parser import parse_prompt
 from app.services.conversation_manager import process_conversation_turn
 from app.services.plan_transformer import transform_to_interactive
+from app.services import anthropic_client
 from app.tools.adapters import get_mcp_tools_schema
 from app.core.logging import logger
 import uuid
+import asyncio
+import json
 
 router = APIRouter(prefix="/api")
 
@@ -532,11 +536,18 @@ async def parse_endpoint(req: ParsePromptRequest):
     summary="Get Interactive Plan (Frontend Format)",
     description="Generate a travel plan with multiple options per time slot for interactive UI"
 )
-async def get_interactive_plan(req: PlanRequest) -> InteractivePlan:
+async def get_interactive_plan(
+    req: PlanRequest, 
+    session_id: str = None
+) -> InteractivePlan:
     """
-    Create a travel plan in interactive format.
+    Create a travel plan in interactive format with real-time progress updates.
     
     **Perfect for frontend!** Each time slot has multiple activity options for users to choose from.
+    
+    **Real-time progress:**
+    - Pass ?session_id=xxx query parameter
+    - Connect to GET /api/plan/progress/{session_id} for live updates
     
     **Example Request:**
     ```json
@@ -570,23 +581,73 @@ async def get_interactive_plan(req: PlanRequest) -> InteractivePlan:
     }
     ```
     """
+    
+    async def send_progress(stage: str, message: str, data: Dict[str, Any] = None):
+        """Send progress update via SSE if session_id provided"""
+        if session_id and session_id in progress_queues:
+            event = {"stage": stage, "message": message}
+            if data:
+                event["data"] = data
+            await progress_queues[session_id].put(event)
+    
     try:
-        # Generate regular plan first
+        # Only validate prompt is not empty - let AI handle the rest
+        prompt = req.prompt.strip()
+        if len(prompt) < 3:
+            raise HTTPException(
+                status_code=400, 
+                detail="Please provide a travel request"
+            )
+        
+        await send_progress("parsing", "İsteğiniz anlaşılıyor...")
+        
+        # Generate regular plan first - AI will handle parsing and validation
         logger.info("Generating base trip plan...")
-        trip_plan = await generate(req)
+        await send_progress("planning", "Seyahat planı oluşturuluyor...")
+        trip_plan = await generate(req, session_id=session_id)
         
         # Transform to interactive format
         logger.info("Transforming to interactive format...")
+        await send_progress("formatting", "Plan hazırlanıyor...")
         interactive_plan = await transform_to_interactive(
             trip_plan.model_dump(),
             language=req.language or "tr"
         )
         
+        await send_progress("complete", "Plan hazır!", {"plan_id": str(uuid.uuid4())})
         return interactive_plan
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (validation errors)
+        await send_progress("error", "Hata oluştu")
+        raise
+        
+    except anthropic_client.RateLimitError as e:
+        logger.error(f"Rate limit error: {e}")
+        await send_progress("error", "AI servisi meşgul, lütfen tekrar deneyin")
+        raise HTTPException(
+            status_code=429,
+            detail="AI service is temporarily busy. Please try again in a few seconds."
+        )
         
     except Exception as e:
         logger.error(f"Error creating interactive plan: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        await send_progress("error", "Plan oluşturulurken hata oluştu")
+        # Check if it's a JSON parsing error (invalid prompt response)
+        error_msg = str(e)
+        if "No valid JSON found" in error_msg:
+            raise HTTPException(
+                status_code=400,
+                detail="Unable to understand your request. Please provide: origin city, destination, and dates. Example: 'Istanbul to Paris, May 15-20'"
+            )
+        elif "validation errors" in error_msg or "float_parsing" in error_msg:
+            # Data format issue - log it but give user-friendly message
+            logger.error(f"Data validation error: {error_msg[:500]}")
+            raise HTTPException(
+                status_code=500,
+                detail="The travel plan was generated but had formatting issues. Please try again or contact support."
+            )
+        raise HTTPException(status_code=500, detail="An error occurred while generating your plan. Please try again.")
 
 
 @router.post(
@@ -641,3 +702,406 @@ async def get_interactive_from_chat(data: Dict[str, Any]) -> InteractivePlan:
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== TIMELINE MANIPULATION ====================
+
+from app.models.timeline import (
+    ActivityReorder, ActivityRemove, AlternativeRequest,
+    TimeSlotUpdate, TimelineUpdate
+)
+from app.services import timeline_service
+
+
+@router.post(
+    "/timeline/reorder",
+    tags=["Timeline"],
+    summary="Reorder Activity (Drag & Drop)",
+    description="Move activity between time slots, even across days"
+)
+async def reorder_activity(request: ActivityReorder) -> TimelineUpdate:
+    """
+    Reorder activity via drag & drop.
+    
+    **Example:**
+    ```json
+    {
+      "session_id": "abc-123",
+      "from_slot_id": "day1-morning",
+      "to_slot_id": "day2-afternoon",
+      "from_day": 1,
+      "to_day": 2,
+      "activity_index": 0
+    }
+    ```
+    """
+    return await timeline_service.reorder_activity(request)
+
+
+@router.post(
+    "/timeline/update-time",
+    tags=["Timeline"],
+    summary="Update Time Slot Range",
+    description="Adjust start/end time of a slot (drag time handles)"
+)
+async def update_time_slot(request: TimeSlotUpdate) -> TimelineUpdate:
+    """
+    Update time slot's time range.
+    
+    **Example:**
+    ```json
+    {
+      "slot_id": "day1-morning",
+      "day": 1,
+      "start_time": "09:00",
+      "end_time": "12:30"
+    }
+    ```
+    """
+    return await timeline_service.update_time_slot(request)
+
+
+@router.post(
+    "/timeline/remove",
+    tags=["Timeline"],
+    summary="Remove Activity",
+    description="Remove activity from timeline"
+)
+async def remove_activity(request: ActivityRemove) -> TimelineUpdate:
+    """
+    Remove activity from slot.
+    
+    **Example:**
+    ```json
+    {
+      "session_id": "abc-123",
+      "slot_id": "day1-morning",
+      "day": 1,
+      "activity_index": 0
+    }
+    ```
+    """
+    return await timeline_service.remove_activity(request)
+
+
+@router.post(
+    "/timeline/alternatives",
+    tags=["Timeline"],
+    summary="Get Alternative Activities",
+    description="Generate 4 AI-powered alternative activities for a slot"
+)
+async def get_alternatives(request: AlternativeRequest) -> TimelineUpdate:
+    """
+    Get 4 alternative activities using AI.
+    
+    **Example:**
+    ```json
+    {
+      "session_id": "abc-123",
+      "slot_id": "day1-afternoon",
+      "day": 1,
+      "destination": "Paris",
+      "time_window": "afternoon",
+      "preferences": ["culture", "art"],
+      "exclude_ids": ["act-123"],
+      "language": "tr"
+    }
+    ```
+    
+    **Returns:**
+    4 unique alternative activities with ratings, prices, and descriptions.
+    """
+    return await timeline_service.get_alternative_activities(request)
+
+
+# Global progress tracking
+progress_queues: Dict[str, asyncio.Queue] = {}
+
+
+@router.get(
+    "/plan/progress/{session_id}",
+    tags=["Planning"],
+    summary="Real-time Plan Generation Progress (SSE)",
+    description="Server-Sent Events stream for real-time plan generation progress"
+)
+async def plan_progress(session_id: str):
+    """
+    Real-time progress updates via Server-Sent Events.
+    
+    **How to use:**
+    1. Frontend calls POST /api/plan/interactive with ?session_id=xxx
+    2. Immediately connect to GET /api/plan/progress/xxx
+    3. Receive real-time events:
+       - stage: "parsing", "flights", "hotels", "weather", "itinerary", "complete"
+       - message: Human-readable progress message
+       - data: Optional data payload
+    
+    **Example events:**
+    ```
+    data: {"stage": "parsing", "message": "Understanding your request..."}
+    
+    data: {"stage": "flights", "message": "Searching for flights...", "data": {"found": 5}}
+    
+    data: {"stage": "complete", "message": "Plan ready!", "data": {"plan_id": "abc-123"}}
+    ```
+    """
+    async def event_generator():
+        # Create queue for this session
+        queue = asyncio.Queue()
+        progress_queues[session_id] = queue
+        
+        try:
+            while True:
+                # Wait for progress events
+                event = await asyncio.wait_for(queue.get(), timeout=120.0)
+                
+                if event is None:  # Completion signal
+                    break
+                
+                # Send SSE formatted event
+                yield f"data: {json.dumps(event)}\n\n"
+                
+                # Check if this is final event
+                if event.get("stage") == "complete" or event.get("stage") == "error":
+                    break
+                    
+        except asyncio.TimeoutError:
+            logger.warning(f"SSE timeout for session {session_id}")
+            yield f"data: {json.dumps({'stage': 'error', 'message': 'Timeout'})}\n\n"
+        finally:
+            # Cleanup
+            if session_id in progress_queues:
+                del progress_queues[session_id]
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+# In-memory storage for shared plans (use Redis/DB in production)
+shared_plans: Dict[str, Dict[str, Any]] = {}
+
+
+@router.post(
+    "/plan/share",
+    tags=["Planning"],
+    summary="Share Plan Publicly",
+    description="Generate a shareable link for a travel plan"
+)
+async def share_plan(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a public shareable link for a travel plan.
+    
+    **Example Request:**
+    ```json
+    {
+      "session_id": "session_123",
+      "plan": { /* full plan object */ },
+      "title": "Rome Adventure - 3 Days",
+      "description": "Amazing trip to Rome with cultural experiences"
+    }
+    ```
+    
+    **Returns:**
+    ```json
+    {
+      "share_id": "abc-xyz-123",
+      "share_url": "https://yourapp.com/shared/abc-xyz-123",
+      "expires_at": "2025-11-30T00:00:00Z"
+    }
+    ```
+    """
+    try:
+        # Generate unique share ID
+        share_id = str(uuid.uuid4())[:12]
+        
+        # Store plan with metadata
+        shared_plans[share_id] = {
+            "id": share_id,
+            "session_id": data.get("session_id"),
+            "plan": data.get("plan"),
+            "title": data.get("title", "Shared Travel Plan"),
+            "description": data.get("description", ""),
+            "created_at": str(uuid.uuid1().time),
+            "views": 0,
+            "is_public": True
+        }
+        
+        logger.info(f"✅ Plan shared with ID: {share_id}")
+        
+        return {
+            "success": True,
+            "share_id": share_id,
+            "share_url": f"/shared/{share_id}",
+            "message": "Plan başarıyla paylaşıldı!"
+        }
+    except Exception as e:
+        logger.error(f"Share plan error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/plan/shared/{share_id}",
+    tags=["Planning"],
+    summary="Get Shared Plan",
+    description="Retrieve a publicly shared travel plan"
+)
+async def get_shared_plan(share_id: str) -> Dict[str, Any]:
+    """
+    Get a shared plan by its ID.
+    
+    **Example:**
+    GET /api/plan/shared/abc-xyz-123
+    
+    **Returns:**
+    Full plan object with metadata
+    """
+    if share_id not in shared_plans:
+        raise HTTPException(status_code=404, detail="Shared plan not found")
+    
+    # Increment view count
+    shared_plans[share_id]["views"] += 1
+    
+    return shared_plans[share_id]
+
+
+# In-memory storage for templates (use DB in production)
+templates: Dict[str, Dict[str, Any]] = {}
+
+
+@router.post(
+    "/plan/save-template",
+    tags=["Templates"],
+    summary="Save Plan as Template",
+    description="Save a travel plan as a reusable template"
+)
+async def save_template(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Save plan as template for future use.
+    
+    **Example Request:**
+    ```json
+    {
+      "session_id": "session_123",
+      "plan": { /* full plan object */ },
+      "title": "3-Day Rome Cultural Tour",
+      "description": "Perfect for art and history lovers",
+      "tags": ["culture", "art", "history", "europe"],
+      "is_public": true
+    }
+    ```
+    
+    **Returns:**
+    ```json
+    {
+      "success": true,
+      "template_id": "tpl-abc-123",
+      "message": "Template saved successfully!"
+    }
+    ```
+    """
+    try:
+        # Generate unique template ID
+        template_id = f"tpl-{str(uuid.uuid4())[:8]}"
+        
+        # Store template
+        templates[template_id] = {
+            "id": template_id,
+            "session_id": data.get("session_id"),
+            "plan": data.get("plan"),
+            "title": data.get("title", "Untitled Template"),
+            "description": data.get("description", ""),
+            "tags": data.get("tags", []),
+            "is_public": data.get("is_public", True),
+            "created_at": str(uuid.uuid1().time),
+            "uses": 0,
+            "creator": "user"  # TODO: Add user authentication
+        }
+        
+        logger.info(f"✅ Template saved with ID: {template_id}")
+        
+        return {
+            "success": True,
+            "template_id": template_id,
+            "message": "Şablon başarıyla kaydedildi!"
+        }
+    except Exception as e:
+        logger.error(f"Save template error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/templates",
+    tags=["Templates"],
+    summary="List Templates",
+    description="Get all available templates"
+)
+async def list_templates(
+    tag: str = None,
+    search: str = None,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """
+    List all public templates with optional filtering.
+    
+    **Query Params:**
+    - tag: Filter by tag (e.g., "culture", "adventure")
+    - search: Search in title/description
+    - limit: Max results (default: 20)
+    
+    **Returns:**
+    Array of template objects
+    """
+    results = list(templates.values())
+    
+    # Filter by public only
+    results = [t for t in results if t.get("is_public", True)]
+    
+    # Filter by tag
+    if tag:
+        results = [t for t in results if tag in t.get("tags", [])]
+    
+    # Search
+    if search:
+        search_lower = search.lower()
+        results = [
+            t for t in results
+            if search_lower in t.get("title", "").lower()
+            or search_lower in t.get("description", "").lower()
+        ]
+    
+    # Limit
+    results = results[:limit]
+    
+    return {
+        "templates": results,
+        "total": len(results)
+    }
+
+
+@router.get(
+    "/templates/{template_id}",
+    tags=["Templates"],
+    summary="Get Template",
+    description="Get a specific template by ID"
+)
+async def get_template(template_id: str) -> Dict[str, Any]:
+    """
+    Get template details.
+    
+    **Example:**
+    GET /api/templates/tpl-abc-123
+    """
+    if template_id not in templates:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    # Increment use count
+    templates[template_id]["uses"] += 1
+    
+    return templates[template_id]
