@@ -296,7 +296,7 @@ export default function SharedPlanPage() {
         {/* Header */}
         <div className="mb-8">
           <Button
-            variant="ghost"
+            variant="default"
             size="sm"
             onClick={() => router.push("/")}
             className="mb-4"
@@ -727,7 +727,7 @@ export default function SharedPlanPage() {
             </p>
             <Button
               size="lg"
-              variant="secondary"
+              variant="default"
               onClick={() => router.push("/")}
             >
               Kendi Planını Oluştur
