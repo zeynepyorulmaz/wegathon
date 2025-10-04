@@ -871,6 +871,17 @@ async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None, tool_call_co
         diagnostics.append(hotels_diag)
         if hotels_mapped:
             logger.info(f"_enrich_with_mcp: Mapped hotel: {hotels_mapped.get('selected', {}).get('name', 'N/A')}")
+            # Ensure check-in/out dates are present (MCP often doesn't return them)
+            if hotels_mapped.get("selected"):
+                selected = hotels_mapped["selected"]
+                if not selected.get("checkInISO") or selected["checkInISO"] == "":
+                    if depart:
+                        selected["checkInISO"] = depart + "T15:00:00Z"
+                        logger.info(f"_enrich_with_mcp: Added checkInISO: {selected['checkInISO']}")
+                if not selected.get("checkOutISO") or selected["checkOutISO"] == "":
+                    if ret:
+                        selected["checkOutISO"] = ret + "T11:00:00Z"
+                        logger.info(f"_enrich_with_mcp: Added checkOutISO: {selected['checkOutISO']}")
             plan["lodging"] = hotels_mapped
     
     if not isinstance(results[2], Exception):
@@ -882,6 +893,41 @@ async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None, tool_call_co
     plan.setdefault("metadata", {})
     md = plan["metadata"]
     md["toolDiagnostics"] = _as_list(md.get("toolDiagnostics")) + diagnostics
+    
+    # Update pricing breakdown with actual flight and hotel prices
+    if "pricing" not in plan:
+        plan["pricing"] = {}
+    if "breakdown" not in plan["pricing"]:
+        plan["pricing"]["breakdown"] = {}
+    
+    breakdown = plan["pricing"]["breakdown"]
+    
+    # Add flight prices to breakdown
+    if plan.get("flights"):
+        outbound_price = plan["flights"].get("outbound", {}).get("price", 0) or 0
+        inbound_price = plan["flights"].get("inbound", {}).get("price", 0) or 0
+        total_flight_price = outbound_price + inbound_price
+        if total_flight_price > 0:
+            breakdown["flights"] = total_flight_price
+            logger.info(f"_enrich_with_mcp: Added flight price to breakdown: ₺{total_flight_price}")
+    
+    # Add hotel price to breakdown if available
+    if plan.get("lodging", {}).get("selected", {}).get("priceTotal"):
+        hotel_price = plan["lodging"]["selected"]["priceTotal"]
+        breakdown["lodging"] = hotel_price
+        logger.info(f"_enrich_with_mcp: Added hotel price to breakdown: ₺{hotel_price}")
+    
+    # Recalculate total - ALWAYS recalculate to fix AI's mistakes
+    if breakdown:
+        total = sum(v for v in breakdown.values() if v is not None and isinstance(v, (int, float)))
+        if total > 0:
+            old_total = plan["pricing"].get("totalEstimated")
+            plan["pricing"]["totalEstimated"] = total
+            if old_total and old_total != total:
+                logger.info(f"_enrich_with_mcp: Corrected total from ₺{old_total} to ₺{total}")
+            else:
+                logger.info(f"_enrich_with_mcp: Set total estimated: ₺{total}")
+    
     return plan
 
 

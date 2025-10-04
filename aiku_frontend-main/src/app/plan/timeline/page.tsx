@@ -527,6 +527,83 @@ export default function TimelinePage() {
                 <HotelCard hotel={plan.lodging.selected} />
               )}
 
+              {/* Trip Cost Summary */}
+              {(plan as any).pricing && (
+                <Card className="bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-950 dark:to-emerald-950 border-2 border-green-200 dark:border-green-800">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-green-700 dark:text-green-300">
+                      <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      Seyahat Maliyeti
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {/* Breakdown */}
+                    {(plan as any).pricing.breakdown && (
+                      <div className="space-y-2 mb-4">
+                        {(plan as any).pricing.breakdown.flights && (
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium">Uçuşlar:</span>
+                            <span className="font-bold text-gray-900 dark:text-gray-100">
+                              ₺{(plan as any).pricing.breakdown.flights.toLocaleString('tr-TR')}
+                            </span>
+                          </div>
+                        )}
+                        {(plan as any).pricing.breakdown.lodging && (
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium">Konaklama:</span>
+                            <span className="font-bold text-gray-900 dark:text-gray-100">
+                              ₺{(plan as any).pricing.breakdown.lodging.toLocaleString('tr-TR')}
+                            </span>
+                          </div>
+                        )}
+                        {(plan as any).pricing.breakdown.activities && (
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium">Aktiviteler (tahmini):</span>
+                            <span className="font-bold text-gray-900 dark:text-gray-100">
+                              ₺{(plan as any).pricing.breakdown.activities.toLocaleString('tr-TR')}
+                            </span>
+                          </div>
+                        )}
+                        {(plan as any).pricing.breakdown.transport && (
+                          <div className="flex justify-between items-center text-sm">
+                            <span className="text-gray-600 dark:text-gray-400 font-medium">Ulaşım (tahmini):</span>
+                            <span className="font-bold text-gray-900 dark:text-gray-100">
+                              ₺{(plan as any).pricing.breakdown.transport.toLocaleString('tr-TR')}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    
+                    {/* Total */}
+                    {(plan as any).pricing.totalEstimated && (
+                      <div className="pt-3 border-t-2 border-green-300 dark:border-green-700">
+                        <div className="flex justify-between items-center">
+                          <span className="text-lg font-bold text-green-700 dark:text-green-300">Toplam (Tahmini):</span>
+                          <span className="text-2xl font-bold text-green-600 dark:text-green-400 font-mono">
+                            ₺{(plan as any).pricing.totalEstimated.toLocaleString('tr-TR')}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-2">
+                          * Yemek ve kişisel harcamalar dahil değildir
+                        </p>
+                      </div>
+                    )}
+                    
+                    {/* Notes */}
+                    {(plan as any).pricing.notes && Array.isArray((plan as any).pricing.notes) && (plan as any).pricing.notes.length > 0 && (
+                      <div className="text-xs text-gray-600 dark:text-gray-400 space-y-1 pt-2">
+                        {(plan as any).pricing.notes.map((note: string, i: number) => (
+                          <p key={i}>• {note}</p>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
               {/* Interactive Timeline with Day Grouping */}
               {Object.entries(groupedByDay).map(([day, daySlots]) => (
                 <div key={`day-${day}`} className="space-y-4">
