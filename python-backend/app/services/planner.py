@@ -945,6 +945,21 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
         session_id: Optional session ID for real-time progress updates via SSE
     """
     
+    # Log plan generation start
+    from datetime import datetime as dt
+    logger.info(
+        "🚀 Starting plan generation",
+        extra={
+            "event": "plan_generation_started",
+            "prompt_length": len(req.prompt),
+            "language": req.language,
+            "currency": req.currency,
+            "session_id": session_id,
+            "prompt_preview": req.prompt[:200]
+        }
+    )
+    plan_start_time = dt.now()
+    
     async def send_progress(stage: str, message: str, data: dict = None):
         """Send progress update if session_id provided"""
         if session_id:
@@ -972,18 +987,40 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
     #     return TripPlan.model_validate(cached_plan)
     
     # Step 1: Parse the prompt for better understanding
-    logger.info(f"generate: Parsing prompt: {req.prompt[:100]}...")
+    logger.info(
+        "📝 Parsing user prompt",
+        extra={
+            "event": "prompt_parsing_started",
+            "session_id": session_id
+        }
+    )
     try:
         from app.services.prompt_parser import parse_prompt
         parsed_input = await parse_prompt(req.prompt, locale="tr-TR")
-        logger.info(f"generate: ✅ PARSED DATES - start: {parsed_input.dates.start_date}, end: {parsed_input.dates.end_date}, duration: {parsed_input.dates.duration}")
-        logger.info(f"generate: ✅ PARSED LOCATIONS - from: {parsed_input.departure.city}, to: {parsed_input.destination.city}, travelers: {parsed_input.travelers.count}")
+        logger.info(
+            f"✅ Prompt parsed successfully: {parsed_input.destination.city} for {parsed_input.dates.duration} days",
+            extra={
+                "event": "prompt_parsing_completed",
+                "destination": parsed_input.destination.city,
+                "departure": parsed_input.departure.city,
+                "start_date": parsed_input.dates.start_date,
+                "end_date": parsed_input.dates.end_date,
+                "duration": parsed_input.dates.duration,
+                "travelers": parsed_input.travelers.count,
+                "session_id": session_id
+            }
+        )
     except Exception as e:
-        logger.error(f"generate: ❌ PROMPT PARSING FAILED: {e}")
-        logger.error(f"generate: Exception type: {type(e).__name__}")
-        import traceback
-        logger.error(f"generate: Traceback: {traceback.format_exc()}")
-        logger.warning(f"generate: Continuing WITHOUT parsed_input - AI will determine dates (may use today's date!)")
+        logger.error(
+            f"❌ Prompt parsing failed: {str(e)}",
+            extra={
+                "event": "prompt_parsing_failed",
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "session_id": session_id
+            }
+        )
+        logger.warning("⚠️  Continuing without parsed input - AI will determine dates")
         parsed_input = None
     
     system = (
@@ -1173,12 +1210,40 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
     # Tool use loop
     max_turns = 10
     for turn in range(max_turns):
-        logger.info(f"generate: Turn {turn + 1}/{max_turns}")
+        logger.info(
+            f"🔄 AI Turn {turn + 1}/{max_turns}",
+            extra={
+                "event": "ai_turn_started",
+                "turn": turn + 1,
+                "max_turns": max_turns,
+                "session_id": session_id
+            }
+        )
+        turn_start = dt.now()
         try:
             response = await anthropic_client.chat_with_tools(messages, tools, system)
-            logger.info(f"generate: Received response with stop_reason={response.get('stop_reason')}")
+            turn_duration = (dt.now() - turn_start).total_seconds()
+            logger.info(
+                f"✅ AI responded in {turn_duration:.2f}s - stop_reason: {response.get('stop_reason')}",
+                extra={
+                    "event": "ai_response_received",
+                    "turn": turn + 1,
+                    "stop_reason": response.get('stop_reason'),
+                    "duration_seconds": turn_duration,
+                    "session_id": session_id
+                }
+            )
         except Exception as e:
-            logger.error(f"generate: Error calling Anthropic API: {e}")
+            logger.error(
+                f"❌ Anthropic API call failed: {str(e)}",
+                extra={
+                    "event": "ai_call_failed",
+                    "turn": turn + 1,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "session_id": session_id
+                }
+            )
             raise
         
         # Check stop reason
@@ -1187,13 +1252,25 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
         
         # If end_turn or no tool_use, we're done
         if stop_reason == "end_turn":
-            logger.info("generate: Received end_turn, extracting final response")
+            logger.info(
+                "✅ AI completed plan generation",
+                extra={
+                    "event": "ai_plan_completed",
+                    "session_id": session_id
+                }
+            )
             # Extract text
             for block in content_blocks:
                 if block.get("type") == "text":
                     raw = block.get("text", "")
-                    logger.info(f"generate: Received text block (length: {len(raw)})")
-                    logger.debug(f"generate: Text preview: {raw[:500]}...")
+                    logger.info(
+                        f"📄 Parsing plan JSON ({len(raw)} chars)",
+                        extra={
+                            "event": "plan_parsing_started",
+                            "text_length": len(raw),
+                            "session_id": session_id
+                        }
+                    )
                     try:
                         obj = _json_only_guard(raw)
                         obj = normalize_to_contract(obj)
@@ -1201,34 +1278,78 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
                         # Check if tools were actually used
                         tool_diags = obj.get("metadata", {}).get("toolDiagnostics", [])
                         if not tool_diags or len(tool_diags) == 0:
-                            logger.warning("generate: Claude did not use tools, applying manual MCP enrichment")
+                            logger.warning(
+                                "⚠️  No tool diagnostics found, enriching with MCP data",
+                                extra={
+                                    "event": "manual_mcp_enrichment_started",
+                                    "session_id": session_id
+                                }
+                            )
                             obj = await _enrich_with_mcp(obj, parsed_input, tool_call_context)
                         
                         plan = TripPlan.model_validate(obj)
                         
-                        # CACHE DISABLED: Don't cache to avoid stale date issues
-                        # from datetime import timedelta
-                        # cache.set(cache_key, plan.model_dump(), ttl=timedelta(hours=2))
-                        # logger.info(f"generate: Cached plan for {req.prompt[:50]}...")
+                        # Log success with plan summary
+                        total_duration = (dt.now() - plan_start_time).total_seconds()
+                        
+                        # Get destination safely (ParsedQuery is a Pydantic model, not dict)
+                        destination = None
+                        if plan.query and plan.query.parsed:
+                            destination = getattr(plan.query.parsed, "destinationCity", None)
+                        
+                        logger.info(
+                            f"✅ Plan generated successfully in {total_duration:.2f}s",
+                            extra={
+                                "event": "plan_generation_completed",
+                                "duration_seconds": total_duration,
+                                "num_days": len(plan.days),
+                                "destination": destination,
+                                "has_flights": bool(plan.flights.outbound or plan.flights.return_flight),
+                                "has_lodging": bool(plan.lodging.selected),
+                                "session_id": session_id
+                            }
+                        )
                         
                         return plan
                     except Exception as e:
-                        logger.error(f"generate: Error parsing/validating response: {e}")
-                        logger.error(f"generate: Raw text: {raw[:1000]}")
+                        logger.error(
+                            f"❌ Plan parsing/validation failed: {str(e)}",
+                            extra={
+                                "event": "plan_parsing_failed",
+                                "error": str(e),
+                                "error_type": type(e).__name__,
+                                "raw_preview": raw[:500],
+                                "session_id": session_id
+                            }
+                        )
                         raise
             # No text found, break
-            logger.warning("generate: No text block found in end_turn response")
+            logger.warning(
+                "⚠️  No text block in response",
+                extra={
+                    "event": "no_text_block_found",
+                    "session_id": session_id
+                }
+            )
             break
         
         # Handle tool_use
         if stop_reason == "tool_use":
-            logger.info("generate: Received tool_use, executing tools")
+            tool_blocks = [b for b in content_blocks if b.get("type") == "tool_use"]
+            logger.info(
+                f"🔧 Executing {len(tool_blocks)} tool(s)",
+                extra={
+                    "event": "tools_execution_started",
+                    "num_tools": len(tool_blocks),
+                    "tool_names": [b.get("name") for b in tool_blocks],
+                    "session_id": session_id
+                }
+            )
             # Append assistant message
             messages.append({"role": "assistant", "content": content_blocks})
             
             # Execute all tool calls IN PARALLEL
             tool_results = []
-            tool_blocks = [b for b in content_blocks if b.get("type") == "tool_use"]
             
             # Send progress for tool execution
             tool_names = [b.get("name") for b in tool_blocks]
@@ -1245,14 +1366,35 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
                 tool_input = block.get("input", {})
                 tool_use_id = block.get("id")
                 
-                logger.info(f"generate: Executing tool '{tool_name}' with input: {tool_input}")
+                logger.info(
+                    f"🔧 Calling {tool_name}",
+                    extra={
+                        "event": "tool_call_started",
+                        "tool_name": tool_name,
+                        "tool_input": tool_input,
+                        "session_id": session_id
+                    }
+                )
+                tool_start = dt.now()
                 
                 # Store tool input for potential reuse
                 tool_call_context[tool_name] = tool_input
                 
                 try:
                     tool_data, tool_diag = await _execute_mcp_tool(tool_name, tool_input)
-                    logger.info(f"generate: Tool '{tool_name}' completed: {tool_diag}")
+                    tool_duration = (dt.now() - tool_start).total_seconds()
+                    
+                    logger.info(
+                        f"✅ {tool_name} completed in {tool_duration:.2f}s",
+                        extra={
+                            "event": "tool_call_completed",
+                            "tool_name": tool_name,
+                            "duration_seconds": tool_duration,
+                            "success": tool_diag.get("ok", False),
+                            "data_size": len(str(tool_data)),
+                            "session_id": session_id
+                        }
+                    )
                     
                     # Send progress update
                     if tool_name == "flight_search":
@@ -1268,7 +1410,18 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
                         "content": json.dumps(tool_data) if not isinstance(tool_data, str) else tool_data
                     }
                 except Exception as e:
-                    logger.error(f"generate: Tool '{tool_name}' failed: {e}")
+                    tool_duration = (dt.now() - tool_start).total_seconds()
+                    logger.error(
+                        f"❌ {tool_name} failed after {tool_duration:.2f}s: {str(e)}",
+                        extra={
+                            "event": "tool_call_failed",
+                            "tool_name": tool_name,
+                            "duration_seconds": tool_duration,
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                            "session_id": session_id
+                        }
+                    )
                     tool_data = {"error": str(e)}
                     tool_diag = {"tool": tool_name, "ok": False, "error": str(e)}
                     return {
@@ -1278,7 +1431,19 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
                     }
             
             # Execute all tools in parallel
+            tools_start = dt.now()
             tool_results = await asyncio.gather(*[execute_tool(block) for block in tool_blocks])
+            tools_duration = (dt.now() - tools_start).total_seconds()
+            
+            logger.info(
+                f"✅ All {len(tool_blocks)} tool(s) completed in {tools_duration:.2f}s",
+                extra={
+                    "event": "tools_execution_completed",
+                    "num_tools": len(tool_blocks),
+                    "duration_seconds": tools_duration,
+                    "session_id": session_id
+                }
+            )
             
             # Send final itinerary progress after tools
             await send_progress("itinerary", "Gezi programı oluşturuluyor...")

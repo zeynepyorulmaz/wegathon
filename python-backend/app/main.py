@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.routers.plan import router as api_router
 from app.services.mcp_pool import initialize_mcp_pool, get_mcp_pool
 from app.core.logging import logger
+from app.middleware.logging_middleware import LoggingMiddleware
 
 
 @asynccontextmanager
@@ -90,6 +91,10 @@ Complete travel planning solution with conversational AI, MCP integration, and i
     ],
 )
 
+# Add logging middleware first (runs last)
+app.add_middleware(LoggingMiddleware)
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_list() or ["*"],
