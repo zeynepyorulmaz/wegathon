@@ -624,19 +624,29 @@ export default function TimelinePage() {
                     slots={daySlots}
                     onReorder={async (from, to, idx) => {
                   try {
+                    // Optimistic update: swap activities
+                    const updatedPlan = { ...plan };
+                    const slot = updatedPlan.time_slots?.find((s: { id: string }) => s.id === from);
+                    
+                    if (slot && slot.options && idx < slot.options.length - 1) {
+                      // Swap current activity with next one
+                      const temp = slot.options[idx];
+                      slot.options[idx] = slot.options[idx + 1];
+                      slot.options[idx + 1] = temp;
+                      setPlan(updatedPlan);
+                    }
+                    
+                    // Send to backend
                     await backendApi.timelineReorder({
                       session_id: sessionId,
                       from_slot: from,
                       to_slot: to,
                       activity_index: idx,
                     });
-                    // Optimistic update
-                    const updatedPlan = { ...plan };
-                    // TODO: Update local state based on response
-                    setPlan(updatedPlan);
                   } catch (e: unknown) {
                     const err = e as Error;
                     console.error("Reorder failed:", err);
+                    // TODO: Revert optimistic update on error
                   }
                 }}
                 onRemove={async (slotId, idx) => {
