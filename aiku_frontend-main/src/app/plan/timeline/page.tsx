@@ -839,21 +839,35 @@ export default function TimelinePage() {
                   setAlternatives([]);
                 }}
                 alternatives={alternatives}
-                currentActivity={
+                currentActivities={
                   showAlternatives 
-                    ? plan.time_slots?.find((s: { id: string }) => s.id === showAlternatives)?.options?.[0]
-                    : undefined
+                    ? plan.time_slots?.find((s: { id: string }) => s.id === showAlternatives)?.options || []
+                    : []
                 }
-                onSelect={async (activity) => {
+                onSelect={async (activity, replaceIndex) => {
                   if (!showAlternatives) return;
                   
-                  // Update local state
+                  // Update local state - REPLACE selected activity
                   const updatedPlan = { ...plan };
                   const slot = updatedPlan.time_slots?.find((s: { id: string }) => s.id === showAlternatives);
-                  if (slot && slot.options) {
-                    slot.options = [activity, ...slot.options];
-                    slot.selected = 0;
+                  if (slot && slot.options && slot.options[replaceIndex]) {
+                    const oldActivity = slot.options[replaceIndex];
+                    
+                    // Replace the selected activity with the new one
+                    slot.options[replaceIndex] = activity;
+                    
+                    console.log('🔄 Replaced activity:', {
+                      slotId: showAlternatives,
+                      oldActivity: oldActivity,
+                      newActivity: activity,
+                      replaceIndex: replaceIndex
+                    });
+                    
                     setPlan(updatedPlan);
+                    
+                    // Close modal
+                    setShowAlternatives(null);
+                    setAlternatives([]);
                   }
                 }}
                 isLoading={loadingAlternatives}
