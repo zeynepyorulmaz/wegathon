@@ -451,11 +451,14 @@ def normalize_to_contract(obj: Dict[str, Any]) -> Dict[str, Any]:
 def _parse_dt(date_str: str | None, time_str: str | None) -> str:
     try:
         if not date_str or not time_str:
+            # If no date/time provided, return empty string to indicate missing data
+            # Frontend should handle this case and not show today's date
             return ""
         # incoming format DD.MM.YYYY and HH:MM
         dt = datetime.strptime(f"{date_str} {time_str}", "%d.%m.%Y %H:%M")
         return dt.isoformat() + "Z"
-    except Exception:
+    except Exception as e:
+        logger.warning(f"_parse_dt: Failed to parse date '{date_str}' time '{time_str}': {e}")
         return ""
 
 
@@ -932,7 +935,8 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
     try:
         from app.services.prompt_parser import parse_prompt
         parsed_input = await parse_prompt(req.prompt, locale="tr-TR")
-        logger.info(f"generate: Parsed - {parsed_input.destination.city}, {parsed_input.dates.start_date}, {parsed_input.travelers.count} travelers")
+        logger.info(f"generate: ✅ PARSED DATES - start: {parsed_input.dates.start_date}, end: {parsed_input.dates.end_date}, duration: {parsed_input.dates.duration}")
+        logger.info(f"generate: ✅ PARSED LOCATIONS - from: {parsed_input.departure.city}, to: {parsed_input.destination.city}, travelers: {parsed_input.travelers.count}")
     except Exception as e:
         logger.warning(f"generate: Prompt parsing failed: {e}. Continuing with basic flow...")
         parsed_input = None
@@ -1007,8 +1011,43 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
         "Be thorough, realistic, and delightful. Create a plan the traveler will be excited to follow!"
     )
     
+    # Add parsed information to user message if available
+    parsed_info = ""
+    if parsed_input:
+        # Convert dates to DD.MM.YYYY format for MCP tools
+        from datetime import datetime
+        try:
+            start_dt = datetime.strptime(parsed_input.dates.start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(parsed_input.dates.end_date, "%Y-%m-%d")
+            departure_date_ddmmyyyy = start_dt.strftime("%d.%m.%Y")
+            return_date_ddmmyyyy = end_dt.strftime("%d.%m.%Y")
+        except:
+            departure_date_ddmmyyyy = parsed_input.dates.start_date
+            return_date_ddmmyyyy = parsed_input.dates.end_date
+            
+        parsed_info = (
+            f"\n**PRE-PARSED TRAVEL INFORMATION (USE THESE EXACT VALUES):**\n"
+            f"- Origin: {parsed_input.departure.city}\n"
+            f"- Destination: {parsed_input.destination.city}\n"
+            f"- Start Date: {parsed_input.dates.start_date} (for flight_search use: {departure_date_ddmmyyyy})\n"
+            f"- End Date: {parsed_input.dates.end_date} (for flight_search use: {return_date_ddmmyyyy})\n"
+            f"- Duration: {parsed_input.dates.duration} days\n"
+            f"- Travelers: {parsed_input.travelers.count} ({parsed_input.travelers.composition})\n\n"
+            f"**CRITICAL: When calling flight_search, use:**\n"
+            f"```\n"
+            f"flight_search({{\n"
+            f"  origin: '{parsed_input.departure.city}',\n"
+            f"  destination: '{parsed_input.destination.city}',\n"
+            f"  departure_date: '{departure_date_ddmmyyyy}',\n"
+            f"  return_date: '{return_date_ddmmyyyy}',\n"
+            f"  adults: {parsed_input.travelers.count}\n"
+            f"}})\n"
+            f"```\n\n"
+        )
+    
     user_msg = (
         f"Create a comprehensive travel plan for: {req.prompt}\n\n"
+        f"{parsed_info}"
         f"Language for responses: {req.language or 'en'}\n"
         f"Currency for pricing: {req.currency or 'TRY'}\n\n"
         "**WORKFLOW EXAMPLE:**\n"

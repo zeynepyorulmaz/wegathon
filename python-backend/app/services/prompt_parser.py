@@ -89,6 +89,10 @@ PARSING_SYSTEM_PROMPT = """You are an expert travel prompt parser. Extract struc
 1. **departure.detected**: false if not mentioned or assumed (default: İstanbul), true if explicitly stated
 2. **destination.detected**: true if mentioned
 3. **dates.start_date**: YYYY-MM-DD format
+   - **IMPORTANT**: If no specific date mentioned, use 7 days from today as reasonable default
+   - If user says "next week", use 7-14 days from today
+   - If user says "next month", use 30 days from today
+   - NEVER use today's date unless explicitly stated "today" or "tomorrow"
 4. **dates.duration**: integer days
 5. **dates.end_date**: YYYY-MM-DD calculated from start + duration
 6. **travelers.composition**: "solo", "couple", "family", "friends", "group"

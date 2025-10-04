@@ -37,6 +37,10 @@ export function FlightCard({ flight, type }: FlightCardProps) {
   // Parse ISO dates safely
   const parseDepartDate = (iso: string) => {
     try {
+      // If empty string or invalid, return null instead of today's date
+      if (!iso || iso.trim() === '') {
+        return null;
+      }
       const date = new Date(iso);
       return isNaN(date.getTime()) ? null : date;
     } catch {
@@ -61,12 +65,12 @@ export function FlightCard({ flight, type }: FlightCardProps) {
     day: '2-digit', 
     month: 'short',
     year: 'numeric'
-  }) || '--';
+  }) || 'Tarih belirtilmemiş';
   
   const departDateShort = departDate?.toLocaleDateString('tr-TR', { 
     day: '2-digit', 
     month: 'short'
-  }) || '--';
+  }) || 'Tarih belirtilmemiş';
   
   const departDayName = departDate?.toLocaleDateString('tr-TR', { 
     weekday: 'short'
@@ -75,7 +79,7 @@ export function FlightCard({ flight, type }: FlightCardProps) {
   const arriveDateStr = arriveDate?.toLocaleDateString('tr-TR', { 
     day: '2-digit', 
     month: 'short'
-  }) || '--';
+  }) || 'Tarih belirtilmemiş';
 
   const hours = Math.floor(mainSegment.durationMinutes / 60);
   const minutes = mainSegment.durationMinutes % 60;
