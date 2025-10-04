@@ -91,17 +91,17 @@ export function PlanChoiceModal({ onClose, onChoose }: PlanChoiceModalProps) {
               </Card>
               {/* Timeline Plan Option */}
               <Card
-                className="cursor-pointer transition-all duration-300 hover:shadow-xl hover:scale-[1.02] hover:border-primary border-2 group relative overflow-hidden"
+                className="cursor-pointer transition-all duration-300 hover:shadow-xl hover:scale-[1.02] hover:border-blue-200 border-2 group relative overflow-hidden"
                 onClick={() => onChoose("timeline" as Mode)}
               >
                 <CardHeader className="space-y-3 pb-3">
                   <div className="flex flex-col items-center text-center gap-3">
-                    <div className="h-16 w-16 rounded-xl bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
-                      <Calendar className="h-8 w-8 text-primary" />
+                    <div className="h-16 w-16 rounded-xl bg-blue-200/20 flex items-center justify-center group-hover:bg-blue-200/30 transition-colors">
+                      <Calendar className="h-8 w-8 text-blue-300" />
                     </div>
                     <div>
                       <CardTitle className="text-lg mb-1">Timeline Plan</CardTitle>
-                      <Badge variant="default" className="text-xs">
+                      <Badge variant="default" className="text-xs bg-blue-300">
                         Throughout Trip
                       </Badge>
                     </div>
@@ -111,7 +111,21 @@ export function PlanChoiceModal({ onClose, onChoose }: PlanChoiceModalProps) {
                   <CardDescription className="text-sm leading-relaxed text-center">
                     Create a full trip plan from your prompt and view it as a timeline
                   </CardDescription>
-                  <Button className="w-full mt-4" size="sm">
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                      <span className="text-blue-300 font-bold">✓</span>
+                      <span>Real flights & hotels</span>
+                    </div>
+                    <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                      <span className="text-blue-300 font-bold">✓</span>
+                      <span>Day-by-day timeline</span>
+                    </div>
+                    <div className="flex items-start gap-2 text-xs text-muted-foreground">
+                      <span className="text-blue-300 font-bold">✓</span>
+                      <span>Drag & drop activities</span>
+                    </div>
+                  </div>
+                  <Button className="w-full mt-4 bg-blue-300 hover:bg-blue-400" size="sm">
                     <Calendar className="h-4 w-4 mr-2" />
                     Generate Timeline
                   </Button>
@@ -165,14 +179,7 @@ export function PlanChoiceModal({ onClose, onChoose }: PlanChoiceModalProps) {
                 className="cursor-pointer transition-all duration-300 hover:shadow-xl hover:scale-[1.02] hover:border-primary border-2 group relative overflow-hidden"
                 onClick={() => onChoose("templates")}
               >
-                <div className="absolute top-2 right-2 z-10">
-                  <Badge
-                    variant="default"
-                    className="text-xs bg-gradient-to-r from-primary to-primary/80"
-                  >
-                    ✨ New
-                  </Badge>
-                </div>
+              
                 <CardHeader className="space-y-3 pb-3">
                   <div className="flex flex-col items-center text-center gap-3">
                     <div className="h-16 w-16 rounded-xl bg-purple-500/10 flex items-center justify-center group-hover:bg-purple-500/20 transition-colors">

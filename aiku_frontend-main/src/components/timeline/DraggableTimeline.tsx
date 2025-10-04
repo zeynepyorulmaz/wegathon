@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Clock, MapPin, DollarSign, Star, Trash2, RefreshCw,
@@ -50,6 +50,12 @@ export function DraggableTimeline({
 }: DraggableTimelineProps) {
   const [editingTime, setEditingTime] = useState<string | null>(null);
   const [expandedSlots, setExpandedSlots] = useState<Set<string>>(new Set());
+
+  // Initialize all slots as expanded when component mounts or slots change
+  useEffect(() => {
+    const allSlotIds = new Set(slots.map(slot => slot.id));
+    setExpandedSlots(allSlotIds);
+  }, [slots]);
 
   const toggleSlot = (slotId: string) => {
     const newExpanded = new Set(expandedSlots);
