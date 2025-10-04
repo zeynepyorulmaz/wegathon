@@ -406,10 +406,20 @@ export default function TimelinePage() {
           <Calendar className="h-6 w-6 text-primary" />
           <h1 className="text-2xl font-bold">Timeline Plan</h1>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => router.push("/")}> 
-          <ChevronLeft className="h-4 w-4 mr-1" />
-          Back
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => router.push("/plan/templates")}
+            className="gap-2"
+          >
+            📚 View Templates
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => router.push("/")}> 
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Back
+          </Button>
+        </div>
       </div>
 
       <Card>

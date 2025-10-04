@@ -10,13 +10,11 @@ import {
   Clock,
   Heart,
   Star,
-  Users,
   MapPin,
   ChevronLeft,
   Sparkles,
   GitFork,
 } from "lucide-react";
-import { templatesApi } from "@/services/api";
 import type { TripTemplate } from "@/types/template";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,8 +36,43 @@ export default function TemplatesPage() {
   async function loadTemplates() {
     setIsLoading(true);
     try {
-      const response = await templatesApi.getAll({ sortBy: selectedFilter });
-      setTemplates(response.data);
+      // Backend'den template'leri çek
+      const response = await fetch('http://localhost:4000/api/templates');
+      const data = await response.json();
+      
+      // Backend template formatını frontend template formatına dönüştür
+      const backendTemplates = data.templates || [];
+      const formattedTemplates: TripTemplate[] = backendTemplates.map((t: {
+        id: string;
+        title: string;
+        description: string;
+        destination?: string;
+        plan?: { time_slots?: unknown[] };
+        likes?: number;
+        rating?: number;
+        usage_count?: number;
+        tags?: string[];
+        created_at: string;
+      }) => ({
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        destination: t.destination || 'Unknown',
+        duration: `${t.plan?.time_slots?.length || 0} days`,
+        likes: t.likes || 0,
+        rating: t.rating || 0,
+        usageCount: t.usage_count || 0,
+        tags: t.tags || [],
+        imageUrl: '/api/placeholder/400/300', // Placeholder image
+        author: {
+          name: 'Anonymous',
+          avatar: '/api/placeholder/32/32'
+        },
+        activities: [], // Could extract from plan.time_slots if needed
+        createdAt: t.created_at
+      }));
+      
+      setTemplates(formattedTemplates);
     } catch (error) {
       console.error("Failed to load templates:", error);
       setTemplates([]);
