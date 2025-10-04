@@ -248,17 +248,37 @@ async def review_suggestion(
         if request.action == "accept":
             # Update the shared trip's cached trip_data
             shared_trip = sharing_service.get_shared_trip(suggestion.shared_trip_id)
+            print(f"🔍 Accepting suggestion:")
+            print(f"   Shared trip found: {shared_trip is not None}")
+            print(f"   Has trip_data: {shared_trip.trip_data is not None if shared_trip else False}")
+            print(f"   Looking for slot_id: {suggestion.time_slot_id}")
+            print(f"   Activity index: {suggestion.original_activity_index}")
+            
             if shared_trip and shared_trip.trip_data:
                 trip_data = shared_trip.trip_data
+                updated = False
                 # Find time slot and update activity
                 for slot in trip_data.get('time_slots', []):
+                    print(f"   Checking slot: {slot.get('id')}")
                     if slot.get('id') == suggestion.time_slot_id:
+                        print(f"   ✅ Found matching slot!")
+                        print(f"   Options length: {len(slot.get('options', []))}")
                         if 'options' in slot and len(slot['options']) > suggestion.original_activity_index:
+                            print(f"   📝 Updating activity at index {suggestion.original_activity_index}")
+                            print(f"   Old activity: {slot['options'][suggestion.original_activity_index].get('title', 'N/A')}")
+                            print(f"   New activity: {suggestion.suggested_activity.get('title', 'N/A')}")
                             slot['options'][suggestion.original_activity_index] = suggestion.suggested_activity
                             # Save updated trip data back to shared trip
                             shared_trip.trip_data = trip_data
                             sharing_service.update_shared_trip(shared_trip)
+                            updated = True
+                            print(f"   ✅ Activity updated and saved!")
                             break
+                        else:
+                            print(f"   ❌ Index out of range or no options")
+                
+                if not updated:
+                    print(f"   ❌ Failed to update - slot not found or invalid index")
             
             # Also update session data if exists
             if suggestion.trip_id in conversation_sessions:

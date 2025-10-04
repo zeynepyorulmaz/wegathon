@@ -108,6 +108,15 @@ export default function SharedPlanPage() {
     try {
       const isEditMode = selectedActivity.isEditMode || false;
 
+      console.log('🔍 Submitting suggestion:', {
+        timeSlotId: selectedActivity.timeSlotId,
+        day: selectedActivity.day,
+        activityIndex: selectedActivity.activityIndex,
+        isEditMode,
+        originalActivity: selectedActivity.title,
+        suggestedActivity: selectedAlternative.title
+      });
+
       // Create the suggestion
       const suggestion = await createSuggestion(shareId, {
         time_slot_id: selectedActivity.timeSlotId,
@@ -119,6 +128,8 @@ export default function SharedPlanPage() {
         suggested_by_name: 'Anonymous',
         suggested_by_id: 'anonymous'
       });
+      
+      console.log('✅ Suggestion created:', suggestion);
 
       // If edit mode, auto-accept the suggestion immediately
       if (isEditMode) {

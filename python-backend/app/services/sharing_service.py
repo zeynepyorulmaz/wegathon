@@ -170,7 +170,7 @@ class SharingService:
         suggestion_id = f"sugg-{secrets.token_urlsafe(8)}"
         suggestion = TripSuggestion(
             id=suggestion_id,
-            shared_trip_id=shared_trip.id,
+            shared_trip_id=shared_trip.share_token,  # Use share_token instead of id
             trip_id=shared_trip.trip_id,
             suggested_by_id=request.suggested_by_id,
             suggested_by_name=request.suggested_by_name,
