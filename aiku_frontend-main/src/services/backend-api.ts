@@ -302,17 +302,21 @@ class BackendApiClient {
   // ==================== SHARE APIs ====================
 
   /**
-   * Share plan publicly
+   * Share plan publicly (with optional password)
    */
   async sharePlan(data: {
     session_id: string;
     plan: any;
     title?: string;
     description?: string;
+    password?: string;
+    allow_edit?: boolean;
   }): Promise<{
     success: boolean;
     share_id: string;
     share_url: string;
+    has_password: boolean;
+    allow_edit: boolean;
     message: string;
   }> {
     return this.request("/api/plan/share", {
@@ -322,10 +326,27 @@ class BackendApiClient {
   }
 
   /**
-   * Get shared plan by ID
+   * Get shared plan info (check if password required)
    */
-  async getSharedPlan(share_id: string): Promise<any> {
-    return this.request(`/api/plan/shared/${share_id}`);
+  async getSharedPlanInfo(share_id: string): Promise<{
+    exists: boolean;
+    requires_password: boolean;
+    title: string;
+    description: string;
+    allow_edit: boolean;
+    views: number;
+  }> {
+    return this.request(`/api/plan/shared/${share_id}/info`);
+  }
+
+  /**
+   * Get shared plan by ID (with password if required)
+   */
+  async getSharedPlan(share_id: string, password?: string): Promise<any> {
+    return this.request(`/api/plan/shared/${share_id}`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
   }
 
   // ==================== UTILITY APIs ====================

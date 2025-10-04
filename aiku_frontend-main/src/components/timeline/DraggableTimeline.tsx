@@ -41,7 +41,7 @@ interface DraggableTimelineProps {
 }
 
 export function DraggableTimeline({
-  slots,
+  slots = [],
   onReorder: _onReorder,
   onRemove,
   onRequestAlternatives,
@@ -53,8 +53,10 @@ export function DraggableTimeline({
 
   // Initialize all slots as expanded when component mounts or slots change
   useEffect(() => {
-    const allSlotIds = new Set(slots.map(slot => slot.id));
-    setExpandedSlots(allSlotIds);
+    if (slots && slots.length > 0) {
+      const allSlotIds = new Set(slots.map(slot => slot.id));
+      setExpandedSlots(allSlotIds);
+    }
   }, [slots]);
 
   const toggleSlot = (slotId: string) => {
@@ -66,6 +68,15 @@ export function DraggableTimeline({
     }
     setExpandedSlots(newExpanded);
   };
+
+  // Safety check for slots
+  if (!slots || slots.length === 0) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        <p>No activities scheduled for this day.</p>
+      </div>
+    );
+  }
 
   // Calculate unique days
   const uniqueDays = new Set(slots.map(slot => slot.day)).size;

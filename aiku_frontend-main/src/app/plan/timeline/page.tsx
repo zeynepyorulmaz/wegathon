@@ -129,9 +129,13 @@ export default function TimelinePage() {
 
   // Share modal state
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showShareOptionsModal, setShowShareOptionsModal] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
   const [shareLoading, setShareLoading] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
+  const [sharePassword, setSharePassword] = useState("");
+  const [shareAllowEdit, setShareAllowEdit] = useState(false);
+  const [shareHasPassword, setShareHasPassword] = useState(false);
 
   // Template modal state
   const [showTemplateModal, setShowTemplateModal] = useState(false);
@@ -289,6 +293,10 @@ export default function TimelinePage() {
   }, [showAlternatives, sessionId, plan]);
 
   // Share plan handler
+  const handleShareClick = () => {
+    setShowShareOptionsModal(true);
+  };
+
   const handleShare = async () => {
     if (!plan) return;
     
@@ -298,12 +306,25 @@ export default function TimelinePage() {
         session_id: sessionId,
         plan: plan,
         title: `${plan.destination} - ${plan.total_days} Days`,
-        description: plan.trip_summary || prompt
+        description: plan.trip_summary || prompt,
+        password: sharePassword || undefined,
+        allow_edit: shareAllowEdit
       });
 
       if (data.success) {
         const fullUrl = `${window.location.origin}${data.share_url}`;
         setShareUrl(fullUrl);
+        setShareHasPassword(data.has_password);
+        
+        // Otomatik olarak linki kopyala
+        try {
+          await navigator.clipboard.writeText(fullUrl);
+          setShareCopied(true);
+        } catch (err) {
+          console.error("Otomatik kopyalama başarısız:", err);
+        }
+        
+        setShowShareOptionsModal(false);
         setShowShareModal(true);
       }
     } catch (error) {
@@ -490,7 +511,7 @@ export default function TimelinePage() {
                   <Button 
                     variant="outline" 
                     size="sm"
-                    onClick={handleShare}
+                    onClick={handleShareClick}
                     disabled={shareLoading}
                   >
                     <Share2 className="h-4 w-4 mr-2" />
@@ -700,7 +721,80 @@ export default function TimelinePage() {
                 </div>
               ))}
 
-              {/* Share Modal */}
+              {/* Share Options Modal */}
+              {showShareOptionsModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                  <Card className="w-full max-w-md">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Share2 className="h-5 w-5 text-blue-500" />
+                        Planı Paylaş
+                      </CardTitle>
+                      <CardDescription>
+                        Paylaşım seçeneklerini belirleyin
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="space-y-3">
+                        <div>
+                          <label className="text-sm font-medium mb-2 block">
+                            Şifre (opsiyonel)
+                          </label>
+                          <input
+                            type="text"
+                            value={sharePassword}
+                            onChange={(e) => setSharePassword(e.target.value)}
+                            placeholder="Şifre koymak istemiyorsanız boş bırakın"
+                            className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Şifre koyarsanız, sadece şifreyi bilenler planı görüntüleyebilir
+                          </p>
+                        </div>
+                        
+                        <div className="flex items-start gap-3 p-3 border rounded-lg">
+                          <input
+                            type="checkbox"
+                            id="allowEdit"
+                            checked={shareAllowEdit}
+                            onChange={(e) => setShareAllowEdit(e.target.checked)}
+                            className="mt-1"
+                          />
+                          <label htmlFor="allowEdit" className="text-sm flex-1 cursor-pointer">
+                            <div className="font-medium">Düzenleme izni ver</div>
+                            <div className="text-muted-foreground">
+                              Linki alanlar planı düzenleyebilsin
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+                      
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            setShowShareOptionsModal(false);
+                            setSharePassword("");
+                            setShareAllowEdit(false);
+                          }}
+                          className="flex-1"
+                        >
+                          İptal
+                        </Button>
+                        <Button
+                          onClick={handleShare}
+                          disabled={shareLoading}
+                          className="flex-1"
+                        >
+                          {shareLoading ? "Paylaşılıyor..." : "Paylaş"}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+
+              {/* Share Success Modal */}
               {showShareModal && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
                   <Card className="w-full max-w-md">
@@ -710,10 +804,28 @@ export default function TimelinePage() {
                         Plan Paylaşıldı! 🎉
                       </CardTitle>
                       <CardDescription>
-                        Planınız başarıyla paylaşıldı. Bu linki herkesle paylaşabilirsiniz.
+                        {shareHasPassword 
+                          ? "Planınız şifre ile korunarak paylaşıldı. Link otomatik kopyalandı! Şifreyi de arkadaşlarınızla paylaşmayı unutmayın."
+                          : "Planınız başarıyla paylaşıldı ve link otomatik kopyalandı! Artık herkesle paylaşabilirsiniz."
+                        }
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
+                      {shareHasPassword && (
+                        <div className="p-3 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg">
+                          <div className="flex items-start gap-2">
+                            <span className="text-lg">🔒</span>
+                            <div className="text-sm">
+                              <div className="font-medium text-amber-900 dark:text-amber-100">
+                                Şifre: {sharePassword}
+                              </div>
+                              <div className="text-amber-700 dark:text-amber-300 text-xs mt-1">
+                                Bu şifreyi de paylaşmayı unutmayın!
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                       <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
                         <input
                           type="text"
@@ -734,7 +846,7 @@ export default function TimelinePage() {
                           ) : (
                             <>
                               <Copy className="h-4 w-4 mr-1" />
-                              Kopyala
+                              Tekrar Kopyala
                             </>
                           )}
                         </Button>

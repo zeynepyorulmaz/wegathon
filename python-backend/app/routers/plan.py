@@ -892,7 +892,7 @@ shared_plans: Dict[str, Dict[str, Any]] = {}
     "/plan/share",
     tags=["Planning"],
     summary="Share Plan Publicly",
-    description="Generate a shareable link for a travel plan"
+    description="Generate a shareable link for a travel plan (with optional password)"
 )
 async def share_plan(data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -904,7 +904,9 @@ async def share_plan(data: Dict[str, Any]) -> Dict[str, Any]:
       "session_id": "session_123",
       "plan": { /* full plan object */ },
       "title": "Rome Adventure - 3 Days",
-      "description": "Amazing trip to Rome with cultural experiences"
+      "description": "Amazing trip to Rome with cultural experiences",
+      "password": "secret123",
+      "allow_edit": true
     }
     ```
     
@@ -913,13 +915,18 @@ async def share_plan(data: Dict[str, Any]) -> Dict[str, Any]:
     {
       "share_id": "abc-xyz-123",
       "share_url": "https://yourapp.com/shared/abc-xyz-123",
-      "expires_at": "2025-11-30T00:00:00Z"
+      "has_password": true,
+      "allow_edit": true
     }
     ```
     """
     try:
         # Generate unique share ID
         share_id = str(uuid.uuid4())[:12]
+        
+        # Get password if provided
+        password = data.get("password")
+        allow_edit = data.get("allow_edit", False)
         
         # Store plan with metadata
         shared_plans[share_id] = {
@@ -928,17 +935,21 @@ async def share_plan(data: Dict[str, Any]) -> Dict[str, Any]:
             "plan": data.get("plan"),
             "title": data.get("title", "Shared Travel Plan"),
             "description": data.get("description", ""),
+            "password": password,  # Store password (in production, use hashing!)
+            "allow_edit": allow_edit,  # Allow collaborators to edit
             "created_at": str(uuid.uuid1().time),
             "views": 0,
-            "is_public": True
+            "is_public": password is None  # Public only if no password
         }
         
-        logger.info(f"✅ Plan shared with ID: {share_id}")
+        logger.info(f"✅ Plan shared with ID: {share_id}, password protected: {password is not None}, editable: {allow_edit}")
         
         return {
             "success": True,
             "share_id": share_id,
             "share_url": f"/shared/{share_id}",
+            "has_password": password is not None,
+            "allow_edit": allow_edit,
             "message": "Plan başarıyla paylaşıldı!"
         }
     except Exception as e:
@@ -946,29 +957,95 @@ async def share_plan(data: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get(
+@router.post(
     "/plan/shared/{share_id}",
     tags=["Planning"],
     summary="Get Shared Plan",
-    description="Retrieve a publicly shared travel plan"
+    description="Retrieve a shared travel plan (with password if required)"
 )
-async def get_shared_plan(share_id: str) -> Dict[str, Any]:
+async def get_shared_plan(share_id: str, data: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Get a shared plan by its ID.
     
     **Example:**
-    GET /api/plan/shared/abc-xyz-123
+    POST /api/plan/shared/abc-xyz-123
+    ```json
+    {
+      "password": "secret123"
+    }
+    ```
     
     **Returns:**
-    Full plan object with metadata
+    Full plan object with metadata, or 401 if password is incorrect
     """
     if share_id not in shared_plans:
         raise HTTPException(status_code=404, detail="Shared plan not found")
     
+    shared_plan = shared_plans[share_id]
+    
+    # Check if password is required
+    if shared_plan.get("password"):
+        provided_password = data.get("password") if data else None
+        
+        if not provided_password:
+            raise HTTPException(
+                status_code=401, 
+                detail="Bu plan şifre ile korunmaktadır"
+            )
+        
+        if provided_password != shared_plan["password"]:
+            raise HTTPException(
+                status_code=403, 
+                detail="Yanlış şifre"
+            )
+    
     # Increment view count
     shared_plans[share_id]["views"] += 1
     
-    return shared_plans[share_id]
+    # Return plan without password field
+    result = {k: v for k, v in shared_plan.items() if k != "password"}
+    
+    return result
+
+
+@router.get(
+    "/plan/shared/{share_id}/info",
+    tags=["Planning"],
+    summary="Get Shared Plan Info (no auth)",
+    description="Check if plan exists and if password is required"
+)
+async def get_shared_plan_info(share_id: str) -> Dict[str, Any]:
+    """
+    Get basic info about a shared plan without authentication.
+    Used to check if password is required before showing the plan.
+    
+    **Example:**
+    GET /api/plan/shared/abc-xyz-123/info
+    
+    **Returns:**
+    ```json
+    {
+      "exists": true,
+      "requires_password": true,
+      "title": "Rome Adventure",
+      "description": "3-day cultural tour",
+      "allow_edit": true
+    }
+    ```
+    """
+    if share_id not in shared_plans:
+        raise HTTPException(status_code=404, detail="Shared plan not found")
+    
+    shared_plan = shared_plans[share_id]
+    
+    return {
+        "exists": True,
+        "requires_password": shared_plan.get("password") is not None,
+        "title": shared_plan.get("title", "Shared Plan"),
+        "description": shared_plan.get("description", ""),
+        "allow_edit": shared_plan.get("allow_edit", False),
+        "views": shared_plan.get("views", 0)
+    }
 
 
 # Template storage with JSON file persistence
