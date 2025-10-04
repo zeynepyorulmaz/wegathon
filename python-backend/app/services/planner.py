@@ -649,8 +649,42 @@ async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None, tool_call_co
     Enrich plan with real MCP data.
     Can use tool_call_context (from previous successful tool calls), parsed_input (from prompt_parser), or plan data.
     """
-    # PRIORITY 1: Use tool call context (most reliable - from actual successful tool calls)
-    if tool_call_context:
+    # Initialize variables
+    origin = dest = depart = ret = ""
+    adults = 1
+    
+    # PRIORITY 0: ALWAYS use parsed_input if available (MOST RELIABLE!)
+    if parsed_input:
+        logger.info(f"🎯 _enrich_with_mcp: USING PARSED INPUT (HIGHEST PRIORITY)")
+        origin = parsed_input.departure.city
+        dest = parsed_input.destination.city
+        adults = parsed_input.travelers.count
+        depart = parsed_input.dates.start_date  # YYYY-MM-DD format
+        ret = parsed_input.dates.end_date  # YYYY-MM-DD format
+        
+        logger.info(f"🚀 _enrich_with_mcp: ✅ FORCED FROM PARSED INPUT - origin={origin}, dest={dest}, depart={depart}, ret={ret}, adults={adults}")
+        
+        # Update plan's parsed section
+        nights = parsed_input.dates.duration or 4
+        plan.setdefault("query", {})
+        plan["query"]["parsed"] = {
+            "originCity": origin,
+            "originIata": origin,
+            "destinationCity": dest,
+            "destinationIata": dest,
+            "startDateISO": depart,
+            "endDateISO": ret,
+            "nights": nights,
+            "adults": adults,
+            "children": len(parsed_input.travelers.children) if parsed_input.travelers.children else 0,
+            "composition": parsed_input.travelers.composition,
+            "budget_amount": parsed_input.budget.amount,
+            "budget_currency": parsed_input.budget.currency,
+            "travel_style": parsed_input.travel_style.type,
+            "preferences": parsed_input.preferences,
+        }
+    # PRIORITY 1: Use tool call context (from actual successful tool calls)
+    elif tool_call_context:
         flight_input = tool_call_context.get("flight_search", {})
         hotel_input = tool_call_context.get("hotel_search", {})
         
@@ -707,46 +741,7 @@ async def _enrich_with_mcp(plan: Dict[str, Any], parsed_input=None, tool_call_co
             logger.info(f"_enrich_with_mcp: ✅ Extracted from hotel context - dest={dest}, depart={depart}, ret={ret}, adults={adults}")
         else:
             logger.warning("_enrich_with_mcp: Tool context provided but no flight_search or hotel_search found")
-            origin = dest = depart = ret = ""
-            adults = 1
-    # PRIORITY 2: Use parsed_input if available
-    elif parsed_input:
-        origin = parsed_input.departure.city
-        dest = parsed_input.destination.city
-        depart = parsed_input.dates.start_date or ""
-        ret = parsed_input.dates.end_date or ""
-        adults = parsed_input.travelers.count or 1
-        logger.info(f"_enrich_with_mcp: Using parsed input - {origin} → {dest}, {depart} to {ret}, {adults} adults")
-        
-        # Update plan's parsed section with our better parsing
-        # Calculate nights
-        nights = parsed_input.dates.duration or 4
-        if depart and ret:
-            try:
-                from datetime import datetime
-                start_dt = datetime.strptime(depart, "%Y-%m-%d")
-                end_dt = datetime.strptime(ret, "%Y-%m-%d")
-                nights = (end_dt - start_dt).days
-            except Exception:
-                pass
-        
-        plan.setdefault("query", {})
-        plan["query"]["parsed"] = {
-            "originCity": origin,
-            "originIata": origin,  # Will be resolved by MCP
-            "destinationCity": dest,
-            "destinationIata": dest,  # Will be resolved by MCP
-            "startDateISO": depart,
-            "endDateISO": ret,
-            "nights": nights,
-            "adults": adults,
-            "children": len(parsed_input.travelers.children) if parsed_input.travelers.children else 0,
-            "composition": parsed_input.travelers.composition,
-            "budget_amount": parsed_input.budget.amount,
-            "budget_currency": parsed_input.budget.currency,
-            "travel_style": parsed_input.travel_style.type,
-            "preferences": parsed_input.preferences,
-        }
+    # PRIORITY 2: Fallback to plan's parsed data
     else:
         # Fallback to plan's parsed data
         parsed = plan.get("query", {}).get("parsed", {})
@@ -915,20 +910,20 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
                     event["data"] = data
                 await plan_router.progress_queues[session_id].put(event)
     
-    # Check cache first
-    from app.services.cache_service import get_cache
-    cache = get_cache()
-    cache_key = cache._generate_key("plan", {
-        "prompt": req.prompt,
-        "language": req.language or "en",
-        "currency": req.currency or "USD"
-    })
-    
-    cached_plan = cache.get(cache_key)
-    if cached_plan:
-        logger.info(f"generate: Using cached plan for prompt: {req.prompt[:50]}...")
-        await send_progress("cache", "Önbellekten plan yükleniyor...")
-        return TripPlan.model_validate(cached_plan)
+    # CACHE DISABLED: Always generate fresh plans to avoid date issues
+    # from app.services.cache_service import get_cache
+    # cache = get_cache()
+    # cache_key = cache._generate_key("plan", {
+    #     "prompt": req.prompt,
+    #     "language": req.language or "en",
+    #     "currency": req.currency or "USD"
+    # })
+    # 
+    # cached_plan = cache.get(cache_key)
+    # if cached_plan:
+    #     logger.info(f"generate: Using cached plan for prompt: {req.prompt[:50]}...")
+    #     await send_progress("cache", "Önbellekten plan yükleniyor...")
+    #     return TripPlan.model_validate(cached_plan)
     
     # Step 1: Parse the prompt for better understanding
     logger.info(f"generate: Parsing prompt: {req.prompt[:100]}...")
@@ -938,7 +933,11 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
         logger.info(f"generate: ✅ PARSED DATES - start: {parsed_input.dates.start_date}, end: {parsed_input.dates.end_date}, duration: {parsed_input.dates.duration}")
         logger.info(f"generate: ✅ PARSED LOCATIONS - from: {parsed_input.departure.city}, to: {parsed_input.destination.city}, travelers: {parsed_input.travelers.count}")
     except Exception as e:
-        logger.warning(f"generate: Prompt parsing failed: {e}. Continuing with basic flow...")
+        logger.error(f"generate: ❌ PROMPT PARSING FAILED: {e}")
+        logger.error(f"generate: Exception type: {type(e).__name__}")
+        import traceback
+        logger.error(f"generate: Traceback: {traceback.format_exc()}")
+        logger.warning(f"generate: Continuing WITHOUT parsed_input - AI will determine dates (may use today's date!)")
         parsed_input = None
     
     system = (
@@ -959,11 +958,19 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
         
         "## TOOL USAGE STRATEGY (MANDATORY):\n"
         "**YOU MUST USE THE AVAILABLE TOOLS** to get real flight, hotel, and weather data. Do NOT make up prices or availability.\n\n"
+        "**CRITICAL DATE REQUIREMENT:**\n"
+        "- The user message will contain **PRE-PARSED TRAVEL INFORMATION** with exact dates\n"
+        "- **YOU MUST USE THESE EXACT DATES** when calling flight_search and hotel_search\n"
+        "- **NEVER use today's date or make up dates**\n"
+        "- The dates are provided in DD.MM.YYYY format for MCP tools (e.g., '15.10.2025')\n"
+        "- Example: If user says '15 Ekim', the parsed info will show 'departure_date: 15.10.2025' - USE THIS EXACT VALUE\n\n"
         "1. **ALWAYS call flight_search** with origin, destination, departure_date, return_date, adults\n"
         "   - **CRITICAL**: Use ENGLISH city names for origin/destination (e.g., 'Istanbul' NOT 'İstanbul', 'Rome' NOT 'Roma', 'Munich' NOT 'Münih')\n"
+        "   - **CRITICAL**: Use the EXACT dates from PRE-PARSED INFORMATION in DD.MM.YYYY format\n"
         "   - Use standard IATA codes when known (e.g., IST, FCO, MUC)\n"
         "2. **ALWAYS call hotel_search** with destination_name, check_in_date, check_out_date, adults\n"
         "   - **CRITICAL**: Use ENGLISH city names (e.g., 'Rome' NOT 'Roma', 'Venice' NOT 'Venedik')\n"
+        "   - **CRITICAL**: Use the EXACT dates from PRE-PARSED INFORMATION in DD.MM.YYYY format\n"
         "3. **ALWAYS call flight_weather_forecast** (or appropriate weather tool) with location, start_date, end_date\n"
         "   - **CRITICAL**: Use ENGLISH city names\n"
         "4. **Use the REAL DATA from tool results** to create your plan\n"
@@ -1026,26 +1033,53 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
             return_date_ddmmyyyy = parsed_input.dates.end_date
             
         parsed_info = (
-            f"\n**PRE-PARSED TRAVEL INFORMATION (USE THESE EXACT VALUES):**\n"
-            f"- Origin: {parsed_input.departure.city}\n"
-            f"- Destination: {parsed_input.destination.city}\n"
-            f"- Start Date: {parsed_input.dates.start_date} (for flight_search use: {departure_date_ddmmyyyy})\n"
-            f"- End Date: {parsed_input.dates.end_date} (for flight_search use: {return_date_ddmmyyyy})\n"
-            f"- Duration: {parsed_input.dates.duration} days\n"
-            f"- Travelers: {parsed_input.travelers.count} ({parsed_input.travelers.composition})\n\n"
-            f"**CRITICAL: When calling flight_search, use:**\n"
-            f"```\n"
+            f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 PRE-PARSED TRAVEL INFORMATION (MANDATORY TO USE)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✈️  Origin: {parsed_input.departure.city}\n"
+            f"📍 Destination: {parsed_input.destination.city}\n"
+            f"📅 Departure Date: {departure_date_ddmmyyyy} (YYYY-MM-DD: {parsed_input.dates.start_date})\n"
+            f"📅 Return Date: {return_date_ddmmyyyy} (YYYY-MM-DD: {parsed_input.dates.end_date})\n"
+            f"⏱️  Duration: {parsed_input.dates.duration} days\n"
+            f"👥 Travelers: {parsed_input.travelers.count} ({parsed_input.travelers.composition})\n\n"
+            f"🚨 CRITICAL INSTRUCTION:\n"
+            f"When calling flight_search and hotel_search, you MUST use these EXACT values:\n\n"
+            f"```javascript\n"
+            f"// MANDATORY: Copy these exact parameters\n"
             f"flight_search({{\n"
             f"  origin: '{parsed_input.departure.city}',\n"
             f"  destination: '{parsed_input.destination.city}',\n"
-            f"  departure_date: '{departure_date_ddmmyyyy}',\n"
-            f"  return_date: '{return_date_ddmmyyyy}',\n"
+            f"  departure_date: '{departure_date_ddmmyyyy}',  // ← USE THIS EXACT DATE\n"
+            f"  return_date: '{return_date_ddmmyyyy}',        // ← USE THIS EXACT DATE\n"
             f"  adults: {parsed_input.travelers.count}\n"
+            f"}})\n\n"
+            f"hotel_search({{\n"
+            f"  destination_name: '{parsed_input.destination.city}',\n"
+            f"  check_in_date: '{departure_date_ddmmyyyy}',   // ← USE THIS EXACT DATE\n"
+            f"  check_out_date: '{return_date_ddmmyyyy}',     // ← USE THIS EXACT DATE\n"
+            f"  adults: {parsed_input.travelers.count},\n"
+            f"  rooms: 1\n"
             f"}})\n"
             f"```\n\n"
+            f"❌ DO NOT use today's date ({datetime.now().strftime('%d.%m.%Y')})\n"
+            f"✅ USE the parsed dates above: {departure_date_ddmmyyyy} and {return_date_ddmmyyyy}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+    
+    # Build dates reminder at the top
+    dates_reminder = ""
+    if parsed_input:
+        dates_reminder = (
+            f"\n{'🚨'*40}\n"
+            f"MANDATORY TOOL PARAMETER OVERRIDE:\n"
+            f"  flight_search departure_date = '{departure_date_ddmmyyyy}'\n"
+            f"  flight_search return_date = '{return_date_ddmmyyyy}'\n"
+            f"DO NOT USE ANY OTHER DATES! COPY THESE VALUES EXACTLY!\n"
+            f"{'🚨'*40}\n\n"
         )
     
     user_msg = (
+        dates_reminder +
         f"Create a comprehensive travel plan for: {req.prompt}\n\n"
         f"{parsed_info}"
         f"Language for responses: {req.language or 'en'}\n"
@@ -1126,10 +1160,10 @@ async def generate(req: PlanRequest, session_id: str = None) -> TripPlan:
                         
                         plan = TripPlan.model_validate(obj)
                         
-                        # Cache the result
-                        from datetime import timedelta
-                        cache.set(cache_key, plan.model_dump(), ttl=timedelta(hours=2))
-                        logger.info(f"generate: Cached plan for {req.prompt[:50]}...")
+                        # CACHE DISABLED: Don't cache to avoid stale date issues
+                        # from datetime import timedelta
+                        # cache.set(cache_key, plan.model_dump(), ttl=timedelta(hours=2))
+                        # logger.info(f"generate: Cached plan for {req.prompt[:50]}...")
                         
                         return plan
                     except Exception as e:

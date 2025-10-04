@@ -70,11 +70,21 @@ async def transform_to_interactive(
             label = (b.get("label") or "morning").lower()
             start_t, end_t = BLOCK_WINDOWS.get(label, ("09:00", "12:00"))
 
-            # Adjust first/last day boundaries with flight times when available
-            if idx == 1 and arrival_time and label in ("morning", "transit", "check-in"):
-                start_t = min(arrival_time, start_t)
-            if idx == total_days and departure_time and label in ("afternoon", "evening", "late-night", "check-out"):
-                end_t = max("00:00", departure_time)
+            # First day: Start activities AFTER arrival time
+            if idx == 1 and arrival_time:
+                # Skip any blocks that end before arrival
+                if end_t < arrival_time:
+                    continue
+                # Start first slot at arrival time
+                start_t = max(start_t, arrival_time)
+            
+            # Last day: End activities BEFORE departure time
+            if idx == total_days and departure_time:
+                # Skip any blocks that start after departure
+                if start_t >= departure_time:
+                    continue
+                # End last slot at departure time
+                end_t = min(end_t, departure_time)
 
             # Map activity items to options
             options: List[Dict[str, Any]] = []

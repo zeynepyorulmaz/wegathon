@@ -89,9 +89,16 @@ PARSING_SYSTEM_PROMPT = """You are an expert travel prompt parser. Extract struc
 1. **departure.detected**: false if not mentioned or assumed (default: İstanbul), true if explicitly stated
 2. **destination.detected**: true if mentioned
 3. **dates.start_date**: YYYY-MM-DD format
-   - **IMPORTANT**: If no specific date mentioned, use 7 days from today as reasonable default
-   - If user says "next week", use 7-14 days from today
-   - If user says "next month", use 30 days from today
+   - **CRITICAL**: Today is 2025-10-04. Use the CURRENT YEAR (2025) for all dates!
+   - If a date like "9 Ekim" or "Dec 25" is mentioned WITHOUT year:
+     * If the date is in the PAST (before today), assume NEXT YEAR (2026)
+     * If the date is in the FUTURE (after today), use CURRENT YEAR (2025)
+   - Examples:
+     * "9 Ekim" → 2025-10-09 (5 days from today, use 2025)
+     * "1 Ocak" → 2026-01-01 (past this year, use next year)
+   - If no specific date mentioned, use 7 days from today (2025-10-11)
+   - If "next week", use 7-14 days from today
+   - If "next month", use 30 days from today
    - NEVER use today's date unless explicitly stated "today" or "tomorrow"
 4. **dates.duration**: integer days
 5. **dates.end_date**: YYYY-MM-DD calculated from start + duration
@@ -250,6 +257,14 @@ async def parse_prompt(user_input: str, locale: str = "tr-TR") -> ParsedTripProm
     """
     logger.info(f"parse_prompt: Parsing input: {user_input[:100]}...")
     
+    # Get today's date dynamically
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    current_year = datetime.now().year
+    
+    # Build dynamic system prompt with today's date
+    dynamic_prompt = PARSING_SYSTEM_PROMPT.replace("2025-10-04", today).replace("CURRENT YEAR (2025)", f"CURRENT YEAR ({current_year})")
+    
     # Call Anthropic with parsing prompt
     messages = [{"role": "user", "content": user_input}]
     
@@ -257,7 +272,7 @@ async def parse_prompt(user_input: str, locale: str = "tr-TR") -> ParsedTripProm
         response = await anthropic_client.chat_with_tools(
             messages=messages,
             tools=[],  # No tools needed for parsing
-            system=PARSING_SYSTEM_PROMPT
+            system=dynamic_prompt
         )
         
         # Extract text from response
