@@ -946,29 +946,30 @@ async def share_plan(data: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get(
-    "/plan/shared/{share_id}",
-    tags=["Planning"],
-    summary="Get Shared Plan",
-    description="Retrieve a publicly shared travel plan"
-)
-async def get_shared_plan(share_id: str) -> Dict[str, Any]:
-    """
-    Get a shared plan by its ID.
-    
-    **Example:**
-    GET /api/plan/shared/abc-xyz-123
-    
-    **Returns:**
-    Full plan object with metadata
-    """
-    if share_id not in shared_plans:
-        raise HTTPException(status_code=404, detail="Shared plan not found")
-    
-    # Increment view count
-    shared_plans[share_id]["views"] += 1
-    
-    return shared_plans[share_id]
+# OLD ROUTE - Replaced by new sharing system in routers/sharing.py
+# @router.get(
+#     "/plan/shared/{share_id}",
+#     tags=["Planning"],
+#     summary="Get Shared Plan",
+#     description="Retrieve a publicly shared travel plan"
+# )
+# async def get_shared_plan(share_id: str) -> Dict[str, Any]:
+#     """
+#     Get a shared plan by its ID.
+#     
+#     **Example:**
+#     GET /api/plan/shared/abc-xyz-123
+#     
+#     **Returns:**
+#     Full plan object with metadata
+#     """
+#     if share_id not in shared_plans:
+#         raise HTTPException(status_code=404, detail="Shared plan not found")
+#     
+#     # Increment view count
+#     shared_plans[share_id]["views"] += 1
+#     
+#     return shared_plans[share_id]
 
 
 # Template storage with JSON file persistence

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { Calendar, ChevronLeft, Share2, Save, Check, Copy, Link2 } from "lucide-react";
+import { Calendar, ChevronLeft, Share2, Save } from "lucide-react";
 import { backendApi, type ProgressEvent } from "@/services/backend-api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Progress } from "@/components/ui/progress";
 import { PlanLoading } from "@/components/loading/PlanLoading";
 import { DraggableTimeline } from "@/components/timeline/DraggableTimeline";
 import { AlternativesModal } from "@/components/timeline/AlternativesModal";
+import { ShareTripModal } from "@/components/sharing/ShareTripModal";
 import { FlightCard } from "@/components/booking/FlightCard";
 import { HotelCard } from "@/components/booking/HotelCard";
 
@@ -129,9 +130,6 @@ export default function TimelinePage() {
 
   // Share modal state
   const [showShareModal, setShowShareModal] = useState(false);
-  const [shareUrl, setShareUrl] = useState("");
-  const [shareLoading, setShareLoading] = useState(false);
-  const [shareCopied, setShareCopied] = useState(false);
 
   // Template modal state
   const [showTemplateModal, setShowTemplateModal] = useState(false);
@@ -289,42 +287,9 @@ export default function TimelinePage() {
   }, [showAlternatives, sessionId, plan]);
 
   // Share plan handler
-  const handleShare = async () => {
+  const handleShare = () => {
     if (!plan) return;
-    
-    setShareLoading(true);
-    try {
-      const data = await backendApi.sharePlan({
-        session_id: sessionId,
-        plan: plan,
-        title: `${plan.destination} - ${plan.total_days} Days`,
-        description: plan.trip_summary || prompt
-      });
-
-      if (data.success) {
-        const fullUrl = `${window.location.origin}${data.share_url}`;
-        setShareUrl(fullUrl);
-        setShowShareModal(true);
-      }
-    } catch (error) {
-      console.error("Share failed:", error);
-      alert("Paylaşım başarısız oldu. Lütfen tekrar deneyin.");
-    } finally {
-      setShareLoading(false);
-    }
-  };
-
-  // Copy share URL to clipboard
-  const handleCopyLink = async () => {
-    if (!shareUrl) return;
-    
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setShareCopied(true);
-      setTimeout(() => setShareCopied(false), 2000);
-    } catch (error) {
-      console.error("Copy failed:", error);
-    }
+    setShowShareModal(true);
   };
 
   // Save as template handler
@@ -491,10 +456,9 @@ export default function TimelinePage() {
                     variant="outline" 
                     size="sm"
                     onClick={handleShare}
-                    disabled={shareLoading}
                   >
                     <Share2 className="h-4 w-4 mr-2" />
-                    {shareLoading ? "Paylaşılıyor..." : "Share"}
+                    Share
                   </Button>
                   <Button 
                     size="sm"
@@ -624,19 +588,29 @@ export default function TimelinePage() {
                     slots={daySlots}
                     onReorder={async (from, to, idx) => {
                   try {
+                    // Optimistic update: swap activities
+                    const updatedPlan = { ...plan };
+                    const slot = updatedPlan.time_slots?.find((s: { id: string }) => s.id === from);
+                    
+                    if (slot && slot.options && idx < slot.options.length - 1) {
+                      // Swap current activity with next one
+                      const temp = slot.options[idx];
+                      slot.options[idx] = slot.options[idx + 1];
+                      slot.options[idx + 1] = temp;
+                      setPlan(updatedPlan);
+                    }
+                    
+                    // Send to backend
                     await backendApi.timelineReorder({
                       session_id: sessionId,
                       from_slot: from,
                       to_slot: to,
                       activity_index: idx,
                     });
-                    // Optimistic update
-                    const updatedPlan = { ...plan };
-                    // TODO: Update local state based on response
-                    setPlan(updatedPlan);
                   } catch (e: unknown) {
                     const err = e as Error;
                     console.error("Reorder failed:", err);
+                    // TODO: Revert optimistic update on error
                   }
                 }}
                 onRemove={async (slotId, idx) => {
@@ -701,64 +675,14 @@ export default function TimelinePage() {
               ))}
 
               {/* Share Modal */}
-              {showShareModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                  <Card className="w-full max-w-md">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Share2 className="h-5 w-5 text-blue-500" />
-                        Plan Paylaşıldı! 🎉
-                      </CardTitle>
-                      <CardDescription>
-                        Planınız başarıyla paylaşıldı. Bu linki herkesle paylaşabilirsiniz.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
-                        <input
-                          type="text"
-                          value={shareUrl}
-                          readOnly
-                          className="flex-1 bg-transparent outline-none text-sm"
-                        />
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={handleCopyLink}
-                        >
-                          {shareCopied ? (
-                            <>
-                              <Check className="h-4 w-4 mr-1 text-green-500" />
-                              Kopyalandı!
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-4 w-4 mr-1" />
-                              Kopyala
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                      
-                      <div className="flex gap-2">
-                        <Button
-                          className="flex-1"
-                          onClick={() => window.open(shareUrl, '_blank')}
-                        >
-                          <Link2 className="h-4 w-4 mr-2" />
-                          Önizleme
-                        </Button>
-                        <Button
-                          variant="outline"
-                          onClick={() => setShowShareModal(false)}
-                        >
-                          Kapat
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-              )}
+              <ShareTripModal
+                isOpen={showShareModal}
+                onClose={() => setShowShareModal(false)}
+                tripId={sessionId}
+                tripTitle={`${plan.destination} - ${plan.total_days} Gün`}
+                ownerName="Guest"
+                tripData={plan as unknown as Record<string, unknown>}
+              />
 
               {/* Save as Template Modal */}
               {showTemplateModal && (
@@ -839,21 +763,35 @@ export default function TimelinePage() {
                   setAlternatives([]);
                 }}
                 alternatives={alternatives}
-                currentActivity={
+                currentActivities={
                   showAlternatives 
-                    ? plan.time_slots?.find((s: { id: string }) => s.id === showAlternatives)?.options?.[0]
-                    : undefined
+                    ? plan.time_slots?.find((s: { id: string }) => s.id === showAlternatives)?.options || []
+                    : []
                 }
-                onSelect={async (activity) => {
+                onSelect={async (activity, replaceIndex) => {
                   if (!showAlternatives) return;
                   
-                  // Update local state
+                  // Update local state - REPLACE selected activity
                   const updatedPlan = { ...plan };
                   const slot = updatedPlan.time_slots?.find((s: { id: string }) => s.id === showAlternatives);
-                  if (slot && slot.options) {
-                    slot.options = [activity, ...slot.options];
-                    slot.selected = 0;
+                  if (slot && slot.options && slot.options[replaceIndex]) {
+                    const oldActivity = slot.options[replaceIndex];
+                    
+                    // Replace the selected activity with the new one
+                    slot.options[replaceIndex] = activity;
+                    
+                    console.log('🔄 Replaced activity:', {
+                      slotId: showAlternatives,
+                      oldActivity: oldActivity,
+                      newActivity: activity,
+                      replaceIndex: replaceIndex
+                    });
+                    
                     setPlan(updatedPlan);
+                    
+                    // Close modal
+                    setShowAlternatives(null);
+                    setAlternatives([]);
                   }
                 }}
                 isLoading={loadingAlternatives}

@@ -77,7 +77,7 @@ export function DraggableTimeline({
         <div>
           <h3 className="font-semibold">Your Trip Timeline</h3>
           <p className="text-sm text-muted-foreground">
-            Reorder with arrows • Adjust times • Build your perfect itinerary
+            Adjust times • Remove activities • Build your perfect itinerary
           </p>
         </div>
         <Badge variant="secondary" className="text-lg px-4 py-2">
@@ -165,13 +165,6 @@ export function DraggableTimeline({
                         transition={{ delay: i * 0.05 }}
                         className="relative"
                       >
-                        {/* Connecting Arrow */}
-                        {i < slot.options.length - 1 && (
-                          <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 z-10">
-                            <div className="text-blue-500">↓</div>
-                          </div>
-                        )}
-                        
                         <ActivityCard
                           activity={activity}
                           isSelected={false}

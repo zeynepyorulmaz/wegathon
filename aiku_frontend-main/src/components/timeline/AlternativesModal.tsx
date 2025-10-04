@@ -12,8 +12,8 @@ interface AlternativesModalProps {
   isOpen: boolean;
   onClose: () => void;
   alternatives: Activity[];
-  currentActivity?: Activity;
-  onSelect: (activity: Activity) => void;
+  currentActivities?: Activity[]; // All activities in the slot
+  onSelect: (activity: Activity, replaceIndex: number) => void;
   isLoading?: boolean;
 }
 
@@ -21,16 +21,19 @@ export function AlternativesModal({
   isOpen,
   onClose,
   alternatives,
-  currentActivity,
+  currentActivities = [],
   onSelect,
   isLoading = false,
 }: AlternativesModalProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [selectedReplaceIndex, setSelectedReplaceIndex] = useState<number | null>(null);
+  const [step, setStep] = useState<'select-activity' | 'select-alternative'>('select-activity');
 
   if (!isOpen) return null;
 
   const currentAlternative = alternatives[currentIndex];
   const hasAlternatives = alternatives.length > 0;
+  const hasMultipleActivities = currentActivities.length > 1;
 
   const handlePrevious = () => {
     setCurrentIndex((prev) => (prev > 0 ? prev - 1 : alternatives.length - 1));
@@ -40,11 +43,25 @@ export function AlternativesModal({
     setCurrentIndex((prev) => (prev < alternatives.length - 1 ? prev + 1 : 0));
   };
 
-  const handleSelect = () => {
-    if (currentAlternative) {
-      onSelect(currentAlternative);
+  const handleActivitySelect = (index: number) => {
+    setSelectedReplaceIndex(index);
+    setStep('select-alternative');
+  };
+
+  const handleAlternativeSelect = () => {
+    if (currentAlternative && selectedReplaceIndex !== null) {
+      onSelect(currentAlternative, selectedReplaceIndex);
       onClose();
+      // Reset state for next time
+      setStep('select-activity');
+      setSelectedReplaceIndex(null);
+      setCurrentIndex(0);
     }
+  };
+
+  const handleBack = () => {
+    setStep('select-activity');
+    setSelectedReplaceIndex(null);
   };
 
   return (
@@ -65,13 +82,24 @@ export function AlternativesModal({
         >
           <Card className="border-2">
             <div className="flex items-center justify-between p-4 border-b">
-              <div>
-                <h3 className="text-lg font-semibold">Alternative Activities</h3>
-                {currentActivity && (
-                  <p className="text-sm text-muted-foreground mt-1">
-                    Currently: <span className="font-medium text-foreground">{currentActivity.title}</span>
-                  </p>
+              <div className="flex items-center gap-3">
+                {step === 'select-alternative' && (
+                  <Button variant="ghost" size="icon" onClick={handleBack}>
+                    <ChevronLeft className="h-5 w-5" />
+                  </Button>
                 )}
+                <div>
+                  <h3 className="text-lg font-semibold">
+                    {step === 'select-activity' 
+                      ? 'Hangi Aktiviteyi Değiştirmek İstiyorsunuz?' 
+                      : 'Alternatif Seçin'}
+                  </h3>
+                  {step === 'select-alternative' && selectedReplaceIndex !== null && (
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Değiştirilecek: <span className="font-medium text-foreground">{currentActivities[selectedReplaceIndex]?.title}</span>
+                    </p>
+                  )}
+                </div>
               </div>
               <Button variant="ghost" size="icon" onClick={onClose}>
                 <X className="h-5 w-5" />
@@ -87,6 +115,47 @@ export function AlternativesModal({
                     className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full"
                   />
                   <p className="mt-4 text-muted-foreground">Finding alternatives...</p>
+                </div>
+              ) : step === 'select-activity' ? (
+                /* Step 1: Select which activity to replace */
+                <div className="space-y-3">
+                  {currentActivities.map((activity, index) => (
+                    <Card 
+                      key={index}
+                      className="border-2 hover:border-primary/50 cursor-pointer transition-all"
+                      onClick={() => handleActivitySelect(index)}
+                    >
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h4 className="font-semibold mb-1">{activity.title}</h4>
+                            {activity.description && (
+                              <p className="text-sm text-muted-foreground line-clamp-2">{activity.description}</p>
+                            )}
+                            <div className="flex items-center gap-4 mt-2">
+                              {activity.duration && (
+                                <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                                  <Clock className="h-3 w-3" />
+                                  <span>{activity.duration}</span>
+                                </div>
+                              )}
+                              {activity.price && (
+                                <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                                  <DollarSign className="h-3 w-3" />
+                                  <span>{activity.price}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          {activity.category && (
+                            <Badge variant="secondary" className="ml-2">
+                              {activity.category}
+                            </Badge>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
                 </div>
               ) : !hasAlternatives ? (
                 <div className="text-center py-12">
@@ -208,11 +277,11 @@ export function AlternativesModal({
                   {/* Actions */}
                   <div className="flex gap-3 mt-6">
                     <Button variant="outline" onClick={onClose} className="flex-1">
-                      Cancel
+                      İptal
                     </Button>
-                    <Button onClick={handleSelect} className="flex-1 gap-2">
+                    <Button onClick={handleAlternativeSelect} className="flex-1 gap-2">
                       <Check className="h-4 w-4" />
-                      Select This Activity
+                      Bu Aktiviteyi Seç
                     </Button>
                   </div>
                 </>
