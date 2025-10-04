@@ -62,13 +62,23 @@ export default function TemplatesPage() {
         likes: t.likes || 0,
         rating: t.rating || 0,
         usageCount: t.usage_count || 0,
+        forks: 0,
         tags: t.tags || [],
-        imageUrl: '/api/placeholder/400/300', // Placeholder image
+        travelStyle: t.tags || [],
+        coverImageId: Math.floor(Math.random() * 100) + 1,
+        totalCost: 'moderate',
+        isFeatured: false,
+        imageUrl: '/api/placeholder/400/300',
+        createdBy: {
+          name: 'Anonymous',
+          avatar: `https://api.dicebear.com/7.x/avatars/svg?seed=${t.id}`,
+          isVerified: false
+        },
         author: {
           name: 'Anonymous',
-          avatar: '/api/placeholder/32/32'
+          avatar: `https://api.dicebear.com/7.x/avatars/svg?seed=${t.id}`
         },
-        activities: [], // Could extract from plan.time_slots if needed
+        activities: [],
         createdAt: t.created_at
       }));
       
