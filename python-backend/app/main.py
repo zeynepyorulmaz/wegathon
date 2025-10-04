@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.routers.plan import router as api_router
+from app.routers.sharing import router as sharing_router
 from app.services.mcp_pool import initialize_mcp_pool, get_mcp_pool
 from app.core.logging import logger
 from app.middleware.logging_middleware import LoggingMiddleware
@@ -104,6 +105,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+app.include_router(sharing_router, prefix="/api/plan")
 
 
 @app.get(

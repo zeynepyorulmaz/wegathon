@@ -299,6 +299,20 @@ class BackendApiClient {
     });
   }
 
+  /**
+   * Get alternatives for activity (wrapper for shared trips)
+   */
+  async getAlternatives(sessionId: string, slotId: string, activityIndex: number): Promise<any> {
+    // This is a simplified wrapper - you may need to pass more context
+    return this.timelineGetAlternatives({
+      session_id: sessionId,
+      slot_id: slotId,
+      day: 1, // Will be overridden by actual day
+      destination: "destination", // Placeholder
+      time_window: "09:00-18:00", // Placeholder
+    });
+  }
+
   // ==================== SHARE APIs ====================
 
   /**
