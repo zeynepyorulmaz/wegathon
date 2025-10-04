@@ -134,6 +134,13 @@ export default function TemplateDetailPage() {
       
       console.log('✅ Formatted Template with Plan:', formattedTemplate);
       console.log('✅ Raw Plan:', t.plan);
+      console.log('🔍 Flights Check:', {
+        hasFlights: !!t.plan?.flights,
+        outbound: t.plan?.flights?.outbound,
+        inbound: t.plan?.flights?.inbound,
+        lodging: t.plan?.lodging,
+        timeSlotsCount: t.plan?.time_slots?.length
+      });
       
       setTemplate(formattedTemplate);
     } catch (error) {
@@ -157,17 +164,27 @@ export default function TemplateDetailPage() {
   };
 
   const handleFork = async () => {
-    if (!template) return;
+    if (!template || !rawPlan) return;
 
     try {
-      const response = await templatesApi.fork(template.id);
-      console.log("Template forked:", response.data);
-      alert(`Template forked successfully! New ID: ${response.data.id}`);
-      // TODO: Navigate to customization page with forked template
-      // router.push(`/plan/customize/${response.data.id}`);
+      // Trip store'a kaydet ve timeline'a yönlendir
+      const tripStoreData = {
+        sessionId: `fork_${Date.now()}`,
+        plan: rawPlan,
+        prompt: template.description || template.title,
+        status: 'completed'
+      };
+      
+      // LocalStorage'a kaydet (trip-store hook bunu kullanır)
+      localStorage.setItem('trip-store', JSON.stringify(tripStoreData));
+      
+      console.log("🔀 Forking template to timeline:", tripStoreData);
+      
+      // Timeline sayfasına yönlendir
+      router.push('/plan/timeline');
     } catch (error) {
       console.error("Failed to fork template:", error);
-      alert("Failed to fork template. Please try again.");
+      alert("Template yüklenemedi. Lütfen tekrar deneyin.");
     }
   };
 

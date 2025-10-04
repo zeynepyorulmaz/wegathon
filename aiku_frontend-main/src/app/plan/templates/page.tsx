@@ -47,40 +47,49 @@ export default function TemplatesPage() {
         title: string;
         description: string;
         destination?: string;
-        plan?: { time_slots?: unknown[] };
+        plan?: { time_slots?: Array<{ day?: number }> };
         likes?: number;
         rating?: number;
         usage_count?: number;
         tags?: string[];
         created_at: string;
-      }) => ({
-        id: t.id,
-        title: t.title,
-        description: t.description,
-        destination: t.destination || 'Unknown',
-        duration: `${t.plan?.time_slots?.length || 0} days`,
-        likes: t.likes || 0,
-        rating: t.rating || 0,
-        usageCount: t.usage_count || 0,
-        forks: 0,
-        tags: t.tags || [],
-        travelStyle: t.tags || [],
-        coverImageId: Math.floor(Math.random() * 100) + 1,
-        totalCost: 'moderate',
-        isFeatured: false,
-        imageUrl: '/api/placeholder/400/300',
-        createdBy: {
-          name: 'Anonymous',
-          avatar: `https://api.dicebear.com/7.x/avatars/svg?seed=${t.id}`,
-          isVerified: false
-        },
-        author: {
-          name: 'Anonymous',
-          avatar: `https://api.dicebear.com/7.x/avatars/svg?seed=${t.id}`
-        },
-        activities: [],
-        createdAt: t.created_at
-      }));
+      }) => {
+        // Gün sayısını hesapla - time_slots'taki unique day değerlerinden
+        const uniqueDays = new Set(
+          (t.plan?.time_slots || []).map((slot) => slot.day).filter(Boolean)
+        );
+        const durationDays = uniqueDays.size > 0 ? uniqueDays.size : 
+                            (t.plan?.time_slots?.length || 0);
+        
+        return {
+          id: t.id,
+          title: t.title,
+          description: t.description,
+          destination: t.destination || 'Unknown',
+          country: t.destination || 'Unknown',
+          duration: durationDays,
+          likes: t.likes || 0,
+          rating: t.rating || 0,
+          forks: 0,
+          tags: t.tags || [],
+          travelStyle: t.tags || [],
+          bestFor: ['solo', 'couple'],
+          coverImageId: Math.floor(Math.random() * 100) + 1,
+          totalCost: 'moderate' as const,
+          isFeatured: false,
+          saves: 0,
+          reviews: 0,
+          isPublic: true,
+          createdBy: {
+            id: 'anonymous',
+            name: 'Anonymous',
+            avatar: `https://api.dicebear.com/7.x/avatars/svg?seed=${t.id}`,
+            isVerified: false
+          },
+          activities: [],
+          createdAt: t.created_at
+        };
+      });
       
       setTemplates(formattedTemplates);
     } catch (error) {

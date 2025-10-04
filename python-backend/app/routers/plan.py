@@ -971,8 +971,33 @@ async def get_shared_plan(share_id: str) -> Dict[str, Any]:
     return shared_plans[share_id]
 
 
-# In-memory storage for templates (use DB in production)
-templates: Dict[str, Dict[str, Any]] = {}
+# Template storage with JSON file persistence
+import os
+from pathlib import Path
+
+TEMPLATES_FILE = Path(__file__).parent.parent / "data" / "templates.json"
+
+def load_templates() -> Dict[str, Dict[str, Any]]:
+    """Load templates from JSON file"""
+    try:
+        if TEMPLATES_FILE.exists():
+            with open(TEMPLATES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load templates: {e}")
+    return {}
+
+def save_templates(templates_data: Dict[str, Dict[str, Any]]):
+    """Save templates to JSON file"""
+    try:
+        TEMPLATES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(TEMPLATES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(templates_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Failed to save templates: {e}")
+
+# Load templates on startup
+templates: Dict[str, Dict[str, Any]] = load_templates()
 
 
 @router.post(
@@ -1017,12 +1042,19 @@ async def save_template(data: Dict[str, Any]) -> Dict[str, Any]:
             "plan": data.get("plan"),
             "title": data.get("title", "Untitled Template"),
             "description": data.get("description", ""),
+            "destination": data.get("destination", "Unknown"),
             "tags": data.get("tags", []),
             "is_public": data.get("is_public", True),
             "created_at": str(uuid.uuid1().time),
+            "usage_count": 0,
+            "likes": 0,
+            "rating": 0.0,
             "uses": 0,
             "creator": "user"  # TODO: Add user authentication
         }
+        
+        # Save to file
+        save_templates(templates)
         
         logger.info(f"✅ Template saved with ID: {template_id}")
         
@@ -1104,4 +1136,49 @@ async def get_template(template_id: str) -> Dict[str, Any]:
     # Increment use count
     templates[template_id]["uses"] += 1
     
-    return templates[template_id]
+    return {"template": templates[template_id]}
+
+
+@router.post(
+    "/templates/{template_id}/like",
+    tags=["Templates"],
+    summary="Like Template",
+    description="Like or unlike a template"
+)
+async def like_template(template_id: str) -> Dict[str, Any]:
+    """
+    Toggle like on a template.
+    
+    **Example:**
+    POST /api/templates/tpl-abc-123/like
+    """
+    if template_id not in templates:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    # Toggle like (in real app, track per-user likes)
+    templates[template_id]["likes"] = templates[template_id].get("likes", 0) + 1
+    save_templates(templates)
+    
+    return {
+        "success": True,
+        "likes": templates[template_id]["likes"]
+    }
+
+
+@router.post(
+    "/templates/{template_id}/unlike",
+    tags=["Templates"],
+    summary="Unlike Template"
+)
+async def unlike_template(template_id: str) -> Dict[str, Any]:
+    """Unlike a template."""
+    if template_id not in templates:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    templates[template_id]["likes"] = max(0, templates[template_id].get("likes", 0) - 1)
+    save_templates(templates)
+    
+    return {
+        "success": True,
+        "likes": templates[template_id]["likes"]
+    }

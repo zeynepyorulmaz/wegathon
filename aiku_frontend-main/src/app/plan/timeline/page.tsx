@@ -336,6 +336,11 @@ export default function TimelinePage() {
 
     setTemplateSaving(true);
     try {
+      // Extract destination from prompt or plan
+      const destination = plan.destination || 
+                         prompt.split(" ").find(word => word.length > 3) || 
+                         "Unknown";
+      
       const response = await fetch("http://localhost:4000/api/plan/save-template", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -344,6 +349,7 @@ export default function TimelinePage() {
           plan: plan,
           title: templateTitle,
           description: templateDescription,
+          destination: destination,
           tags: templateTags,
           is_public: true
         })
